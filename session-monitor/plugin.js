@@ -204,6 +204,16 @@ const SHARED = {
  * Deltas, not counters: a `session.usage` total is that process's cumulative for the session, so
  * absolute values are not comparable between sessions.
  */
+/**
+ * The backend half, when it is installed and enabled: `/api/plugins/session-monitor/summary` reads
+ * `session_model_usage`, which the app side cannot — every request, token and dollar over every
+ * session, split by provider, task and model. The pane prefers those recorded totals and falls back
+ * to the page of rows when the route is absent (an older install, or the gate not yet opened).
+ */
+const ENRICHED = { available: null, totals: null }
+/** The plugin's own REST namespace (`ctx.rest`), captured at registration. */
+const restRef = { current: null }
+
 const AGG = {
   cost: 0,
   live: new Map(), // session id -> { last: counter, tokens: counted live since the row read }
@@ -224,13 +234,20 @@ function overviewSnapshot() {
   // In-flight growth priced at the aggregate's own blended rate, marked as the estimate it is.
   const rate = AGG.tokens > 0 && AGG.cost > 0 ? AGG.cost / AGG.tokens : 0
 
+  // The backend half's recorded totals when they are available — every session, every provider —
+  // otherwise the page of rows this view could read for itself.
+  const baseCost = ENRICHED.totals ? ENRICHED.totals.cost : AGG.cost
+  const baseCalls = ENRICHED.totals ? ENRICHED.totals.calls : AGG.requests
+  const baseTokens = ENRICHED.totals ? ENRICHED.totals.tokens : AGG.tokens
+  const baseRate = baseTokens > 0 && baseCost > 0 ? baseCost / baseTokens : 0
+
   return {
-    cost: AGG.cost + liveTokens * rate,
-    costLive: liveTokens > 0 && rate > 0,
+    cost: baseCost + liveTokens * (rate || baseRate),
+    costLive: liveTokens > 0 && (rate > 0 || baseRate > 0),
     liveTokens,
-    requests: AGG.requests,
-    sessions: AGG.sessions,
-    tokens: AGG.tokens + liveTokens
+    requests: baseCalls,
+    sessions: ENRICHED.totals ? ENRICHED.totals.sessions : AGG.sessions,
+    tokens: baseTokens + liveTokens
   }
 }
 
@@ -719,12 +736,36 @@ function useMonitor() {
   // render, so referencing a later `const` would be a temporal-dead-zone error).
   // Manual refresh for the panel's header button: re-read the stored row now
   // instead of waiting for the next poll. `refreshing` only drives the spinner.
+  /** Ask the backend half for the recorded totals; silently absent when it is not installed. */
+  const loadRecorded = useCallback(async rest => {
+    if (typeof rest !== 'function') return
+
+    try {
+      const summary = await rest('summary')
+
+      if (summary?.totals) {
+        ENRICHED.available = true
+        ENRICHED.totals = summary.totals
+        // The recorded totals now account for everything counted so far, so the live deltas are
+        // dropped — otherwise each fetch would add them to the total it already includes.
+        AGG.live.clear()
+        AGG.requests = 0
+        uiSet({ overview: overviewSnapshot() })
+      }
+    } catch {
+      // No backend half (or it is not enabled): the page of rows remains the source.
+      ENRICHED.available = false
+      ENRICHED.totals = null
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     setRefreshing(true)
 
     try {
       await load()
       await pullContext({ force: true })
+      await loadRecorded(restRef.current)
     } finally {
       setRefreshing(false)
     }
@@ -785,6 +826,8 @@ function useMonitor() {
 
     // One poll per window, for the same reason as one subscriber.
     OWNERS.poll += 1
+
+    void loadRecorded(restRef.current)
 
     const timer =
       OWNERS.poll === 1
@@ -1170,6 +1213,10 @@ export default {
   description: 'Live per-session tokens, cost and cache-hit rate for the current session',
   register(ctx) {
     debug('loaded', { at: new Date().toISOString() })
+
+    // The backend half's summary route, if it is installed and enabled (see the README): the
+    // recorded totals over every session, which the app side cannot read for itself.
+    restRef.current = typeof ctx.rest === 'function' ? path => ctx.rest(path) : null
     // `data` (not `render`) so the bar's own right-click menu can list it: an item
     // with a `toggleLabel` gets a "Show in status bar" checkbox and a persisted
     // hide flag; a plain `render` contribution is always-on chrome with no toggle.

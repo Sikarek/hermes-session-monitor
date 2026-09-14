@@ -1,0 +1,7 @@
+{
+  "name": "session-monitor",
+  "label": "Session Monitor",
+  "description": "Historical totals across every session: requests, tokens and cost, per provider and per model.",
+  "version": "1.0.0",
+  "api": "plugin_api.py"
+}

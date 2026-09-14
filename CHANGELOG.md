@@ -153,6 +153,14 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 ### Added
 
 - **An `Overview` tab** in the sidebar: the total tokens and cost of every session in the profile — subagents included — climbing while any of them runs. Its base is the same page of session rows the focused view reads; what makes it live is a per-session delta recorded for every running session's ticks, priced at the aggregate's blended rate while in flight (marked `~`) and dropped as each row is written, so nothing counts twice. The focused view's ownership filter is untouched: another session's tick moves the Overview and never the chip.
+- **The backend half**: `plugins/session-monitor/dashboard/plugin_api.py` exposes Hermes' own record
+  (`session_model_usage`) read-only at `/api/plugins/session-monitor/summary` — every request, token
+  and dollar over every session, split by provider, task and model, which the app side cannot read.
+  Gated behind `plugins.enabled` like every user plugin; the pane prefers it and falls back to the
+  page of rows when it is absent. Two hypotheses proved wrong on the way: `hermes plugins enable`
+  does not accept a hand-placed folder (it tracks the installed registry), and the mount requires
+  `_api_file`, which comes from the manifest rather than the entry's `api` key — both checked against
+  the loader's own code before claiming they worked.
 - **A `Total requests` row** in the Overview: API calls counted across sessions as they are observed.
   The session row carries only tool calls and the authoritative per-session count lives in
   `session_model_usage`, which the renderer cannot read, so this is every request reported while the

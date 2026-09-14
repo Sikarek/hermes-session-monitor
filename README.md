@@ -45,6 +45,35 @@ The three token rows **partition** the session total: `cache hit + cache miss + 
 
 The number moves **while the model works**: streamed reasoning and reply text are counted chunk by chunk as they arrive, and each completed API call snaps the total to the provider's reported figure.
 
+## The backend half (historical totals)
+
+The pane reads the app's **session rows**, which carry no request count and no per-model split. Both
+live in `session_model_usage`, which only the Python side can reach — so the repository ships a small
+backend plugin that exposes them read-only at `/api/plugins/session-monitor/summary`:
+
+```
+totals:    24,517 requests · 5,691,612,344 tokens · $73.9135 · 263 sessions
+byProvider / byTask / byModel     (whatever that table holds)
+```
+
+Install it alongside the app half (same id, so the pane's own REST namespace resolves):
+
+```bash
+cp -r hermes-session-monitor/plugins/session-monitor ~/.hermes/plugins/
+```
+
+then allow its Python to run — user plugins are gated behind `plugins.enabled` in
+`config.yaml`, deliberately, so an installed-but-unenabled plugin cannot execute at startup:
+
+```yaml
+plugins:
+  enabled: [session-monitor]
+```
+
+Restart the backend (or the app) once. Without this half the Overview falls back to the page of
+rows it can read itself — same tabs, fewer sources. With it, the Overview's totals are Hermes' own
+record over every session, every provider and every model.
+
 ## Install
 
 macOS / Linux:

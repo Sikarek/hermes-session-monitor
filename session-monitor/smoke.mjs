@@ -276,6 +276,7 @@ const WINDOWS = {
   n: { cacheRead: 4000, key: 'N', runtime: 'rtN', stored: 'storedN' }, // out-of-order reads
   o: { cacheRead: 7000, key: 'O', runtime: 'rtO', stored: 'storedO' }, // focus vs active chat
   p: { cacheRead: 3000, key: 'P', runtime: 'rtP', stored: 'storedP' }, // the context figure's session stamp
+  q: { cacheRead: 1000, key: 'Q', runtime: 'rtQ', stored: 'storedQ' }, // the backend half's recorded totals
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -418,7 +419,8 @@ async function mount(modulePath) {
 
       return () => {}
     },
-    rest: async () => ({}),
+    // A test may stand in for the backend half by setting globalThis.__stSummary.
+    rest: async path => (path === 'summary' && globalThis.__stSummary ? globalThis.__stSummary : {}),
     socket: () => () => {},
     storage: { get: () => undefined, remove: () => {}, set: () => {} },
     os: { notify: () => {}, openExternal: () => {}, reveal: () => {} },
@@ -1312,6 +1314,22 @@ globalThis['__stEvents_P']['session.info']({
 await wait(250)
 
 edgeAssert('the figure for the current runtime paints', panelP().includes('222,222'), `got "${panelP().slice(0, 90)}"`)
+
+// Q — THE RECORDED TOTALS (the backend half): with `/api/plugins/session-monitor/summary` answering,
+// the Overview shows Hermes' own record over EVERY session — every provider, every model, tasks
+// included — instead of the page of rows this side could read for itself. Without it, the page
+// aggregate stands (window L above asserts that path).
+globalThis.__stSummary = { totals: { calls: 24517, cost: 73.9135, sessions: 263, tokens: 5691612344 } }
+
+const winQ = await mount(toModule(code, 'plugin-winQ.mjs', stubPathFor(WINDOWS.q)))
+await wait(500)
+
+const overviewQ = winQ.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+edgeAssert('the Overview shows the recorded totals', /5,691,612,344/.test(overviewQ) && /24,517/.test(overviewQ) && /263/.test(overviewQ), `got "${overviewQ.slice(0, 130)}"`)
+edgeAssert('the recorded cost is shown', /\$73\.9135/.test(overviewQ), `got "${overviewQ.slice(0, 130)}"`)
+
+globalThis.__stSummary = null
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
