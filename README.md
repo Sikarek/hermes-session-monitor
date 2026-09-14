@@ -176,13 +176,61 @@ grep -n "text.length" plugin.js
 
 The plugin is one plain-ESM file: no build step, hot-reloaded on save.
 
-Run the mount test before installing an edited copy:
+**Two checks before installing an edited copy:**
 
 ```bash
+# 1. static — TypeScript over the plugin, using the binary from a Hermes source
+#    checkout (a plugin-only clone has no node_modules). Catches undeclared names and
+#    use-before-declaration; both shipped a bug during development — an undefined
+#    identifier that made every usage tick throw, and a callback referencing a
+#    binding declared below it. The only output to expect is the module-resolution
+#    noise for `@hermes/plugin-sdk` and `react`, which are stubs at this point, plus
+#    one `TS2339` on `this.props` inside the error-boundary class — React's own types
+#    live in the app, not here, so that property cannot be resolved from outside.
+"$HOME/.hermes/hermes-agent/node_modules/.bin/tsc" --allowJs --checkJs --noEmit \
+  --target esnext --moduleResolution bundler --skipLibCheck --noImplicitAny false \
+  --strictNullChecks false session-monitor/plugin.js
+
+# 2. behavioural
 node session-monitor/smoke.mjs
 ```
 
-It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks and attributed usage/context payloads, asserts the panel rows, the labels/figures contrast rule, the context bar width, the percentage-free rows and that the header's refresh button triggers a fresh read, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
+### What the mount test covers
+
+It stubs the SDK, mounts the chip against a real React root inside an error
+boundary, and fails on render *and* effect-time errors (`node --check` cannot see
+an undefined identifier, and an uncontained throw reaches the app's root boundary,
+which blanks the window).
+
+Behaviour — a streamed chunk moves the total by exactly `chars ÷ 4`; a completed
+call is adopted; the context row paints from an attributed payload and its bar
+matches the reported percent; the refresh button performs a fresh read; the
+labels/figures contrast rule and the percentage-free rows hold; the popover width
+contract holds.
+
+Isolation — two simulated windows keep separate totals; a foreign session's tick,
+context payload or text is refused; a tick from a resumed runtime id IS adopted
+(its own `session.info` taught the chip that id).
+
+Edge cases — each is a situation the chip meets in the field:
+
+| Situation | What must happen |
+|---|---|
+| A draft with no session yet (`null` ids) | Renders, reports that no stored row exists |
+| The stored-row read throws (backend hiccup) | Live counting keeps working |
+| An older build without `host.listPersistedSessions` | Mounts and degrades, never throws |
+| An older SDK without `Button` or the icon set | Still renders a working refresh control (plain button + `↻`) |
+| A provider that bills cache writes | `Cache hit` = read + write, and the total includes both |
+| A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no `NaN`, no `undefined` |
+| A session switch inside one window | The new session takes over; the abandoned one stops counting |
+| A model switch | The context window clears and a fresh read is triggered |
+| A deliberately broken copy of the plugin | The error boundary contains it; the app root is never reached |
+
+Every assertion above was mutation-checked: reintroducing each bug makes the suite
+fail with a message naming it (verified for the undefined identifier, the
+use-before-declaration, a removed numeric guard, dropped cache writes, the missing
+refresh button, a missing event subscription, and a model switch that leaves the
+old window on screen).
 
 ## License
 

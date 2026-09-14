@@ -66,6 +66,26 @@ const stubFor = w => {
   const cacheRead = String(w.cacheRead)
   const LIST_CALLS = JSON.stringify(`__stListCalls_${w.key}`)
   const SET_MODEL = JSON.stringify(`__stSetModel_${w.key}`)
+  const SET_SESSION = JSON.stringify(`__stSetSession_${w.key}`)
+  const cacheWrite = String(w.cacheWrite ?? 0)
+  const READ_THROWS = w.readThrows ? 'true' : 'false'
+  const LIST_READ = w.noRowMethod
+    ? 'listPersistedSessions: undefined,'
+    : `listPersistedSessions: async () => {
+    globalThis[${LIST_CALLS}] = (globalThis[${LIST_CALLS}] ?? 0) + 1
+
+    if (${READ_THROWS}) throw new Error('backend hiccup: sessions read failed')
+
+    return {
+    limit: 1, offset: 0, total: 1,
+    sessions: [{
+      cache_read_tokens: ${cacheRead}, cache_write_tokens: ${cacheWrite}, cost_source: 'provider_models_api',
+      cost_status: 'estimated', estimated_cost_usd: 1.3718, id: ${stored},
+      input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
+      resolved_id: ${runtime}
+    }]
+    }
+  },`
   const tail = names.filter(name => !KNOWN.includes(name)).map(name => `export const ${name} = noop`).join('\n')
 
   return `
@@ -86,6 +106,8 @@ const atomImpl = value => {
 }
 const atom = atomImpl
 const modelAtom = atom(${JSON.stringify('deepseek/deepseek-v4.1-flash')})
+const storedAtom = atom(${stored})
+const runtimeAtom = atom(${runtime})
 const noop = () => null
 const EVENTS = (globalThis[${key}] = {})
 
@@ -93,9 +115,9 @@ export const host = {
   state: {
     activeSessionId: atom(${runtime}),
     busy: atom(false),
-    focusedSessionId: atom(${runtime}),
+    focusedSessionId: runtimeAtom,
     focusedSessionProfile: atom('default'),
-    focusedStoredSessionId: atom(${stored}),
+    focusedStoredSessionId: storedAtom,
     focusedUsage: atom(null),
     gateway: atom('open'),
     model: modelAtom
@@ -118,24 +140,16 @@ export const host = {
   restartGateway: async () => {}, status: async () => ({}),
   logs: { tail: async () => [] },
   // Counted so the refresh-button contract can assert that a fresh read happened.
-  listPersistedSessions: async () => {
-    globalThis[${LIST_CALLS}] = (globalThis[${LIST_CALLS}] ?? 0) + 1
-
-    return {
-    limit: 1, offset: 0, total: 1,
-    sessions: [{
-      cache_read_tokens: ${cacheRead}, cache_write_tokens: 0, cost_source: 'provider_models_api',
-      cost_status: 'estimated', estimated_cost_usd: 1.3718, id: ${stored},
-      input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
-      resolved_id: ${runtime}
-    }]
-    }
-  }
+  ${LIST_READ}
 }
 
 // Subscribing hop, like the app's useStore: without it a mutated atom would never
 // re-render the chip and every change-propagation contract would be untestable.
 globalThis[${SET_MODEL}] = next => modelAtom.set(next)
+globalThis[${SET_SESSION}] = (storedId, runtimeId) => {
+  storedAtom.set(storedId)
+  runtimeAtom.set(runtimeId)
+}
 export const useValue = value => {
   if (!value || typeof value.get !== 'function') return value
 
@@ -153,7 +167,7 @@ export const usePluginI18n = () => (key, ...args) => [key, ...args].join(' ')
 export const compactNumber = value => String(value ?? 0)
 export const cn = (...args) => args.filter(Boolean).join(' ')
 import { createElement, useEffect, useState } from 'react'
-export const Button = ({ children, ...props }) => createElement('button', props, children)
+${w.noButton ? 'export const Button = undefined\nexport const icons = undefined' : `export const Button = ({ children, ...props }) => createElement('button', props, children)`}
 export const Popover = ({ children, onOpenChange }) => {
   useEffect(() => { onOpenChange?.(true) }, [])
   return createElement('div', { 'data-stub': 'popover' }, children)
@@ -166,7 +180,7 @@ export const Tip = ({ children, label }) => {
   globalThis.__stTipLabels.push(label)
   return children
 }
-export const icons = new Proxy({}, { get: () => noop })
+${w.noButton ? '' : 'export const icons = new Proxy({}, { get: () => noop })'}
 export { atom }
 ${tail}
 `
@@ -174,7 +188,13 @@ ${tail}
 
 const WINDOWS = {
   a: { cacheRead: 26428800, key: 'A', runtime: 'rtA', stored: 'storedA' },
-  b: { cacheRead: 500000, key: 'B', runtime: 'rtB', stored: 'storedB' }
+  b: { cacheRead: 500000, key: 'B', runtime: 'rtB', stored: 'storedB' },
+  // Edge fixtures
+  c: { cacheRead: 1000, key: 'C', runtime: null, stored: null }, // a draft: no session yet
+  d: { cacheRead: 1000, key: 'D', readThrows: true, runtime: 'rtD', stored: 'storedD' }, // backend hiccup
+  e: { cacheRead: 1000, key: 'E', noRowMethod: true, runtime: 'rtE', stored: 'storedE' }, // older desktop build
+  f: { cacheRead: 1000, cacheWrite: 500, key: 'F', runtime: 'rtF', stored: 'storedF' }, // provider that writes cache
+  g: { cacheRead: 1000, key: 'G', noButton: true, runtime: 'rtG', stored: 'storedG' } // older SDK: no Button/icons
 }
 
 const stubPathFor = window => {
@@ -693,6 +713,92 @@ if ((windowB.container.textContent ?? '').includes(refused)) isolation.push('B a
 
 if (isolation.length) {
   console.error('\nFAIL (isolation) — sessions are not separated:\n' + isolation.map(item => `  • ${item}`).join('\n'))
+  fs.rmSync(tmph, { force: true, recursive: true })
+  process.exit(1)
+}
+
+// ── EDGE CASES ───────────────────────────────────────────────────────────────
+// Every one of these is a real situation the chip meets in the field: a draft with
+// no session yet, a failing session read, an older desktop build without the read at
+// all, a provider that BILLS cache writes, a garbage payload, and a session switch
+// inside one window. None may throw, paint NaN, or reach the app root boundary.
+const edge = []
+const edgeAssert = (name, ok, detail = '') => {
+  if (!ok) edge.push(`${name} — ${detail}`)
+}
+
+// C — a draft: no session ids at all.
+const winC = await mount(toModule(code, 'plugin-winC.mjs', stubPathFor(WINDOWS.c)))
+
+edgeAssert('draft window mounts clean', winC.failures.length === 0 && !winC.boundaryCaught, winC.failures[0] ?? 'boundary hit')
+edgeAssert('draft window degrades visibly', /no stored row/.test(winC.container?.textContent ?? ''), (winC.container?.textContent ?? '').slice(0, 70))
+
+// D — the session read throws (backend hiccup): the chip must keep counting live.
+const winD = await mount(toModule(code, 'plugin-winD.mjs', stubPathFor(WINDOWS.d)))
+
+globalThis['__stEvents_D']?.['message.delta']?.({ payload: { text: 'x'.repeat(400) }, session_id: WINDOWS.d.runtime, type: 'message.delta' })
+await wait(250)
+
+edgeAssert('failing read mounts clean', winD.failures.length === 0 && !winD.boundaryCaught, winD.failures[0] ?? 'boundary hit')
+edgeAssert('failing read keeps live counting', /100/.test(winD.container?.textContent ?? ''), (winD.container?.textContent ?? '').slice(0, 70))
+
+// E — an older build with no host.listPersistedSessions: mount must survive.
+const winE = await mount(toModule(code, 'plugin-winE.mjs', stubPathFor(WINDOWS.e)))
+
+edgeAssert('missing read method mounts clean', winE.failures.length === 0 && !winE.boundaryCaught, winE.failures[0] ?? 'boundary hit')
+edgeAssert('missing read method degrades visibly', /live only/.test(winE.container?.textContent ?? ''), (winE.container?.textContent ?? '').slice(0, 70))
+
+// F — a provider that writes cache: Cache hit must be read + write, not read alone.
+// The panel is looked up as the LAST one in the DOM (mount order), not by a loose
+// document-wide regex — `501,500` in window B contains `1,500` and matched first
+// when this assertion was written the lazy way.
+const winF = await mount(toModule(code, 'plugin-winF.mjs', stubPathFor(WINDOWS.f)))
+const panelF = [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)
+const panelFText = panelF?.textContent ?? ''
+
+edgeAssert('cache writes are counted in Cache hit', /1,500/.test(panelFText), `expected 1,000 read + 500 write in "${panelFText.slice(0, 90)}"`)
+edgeAssert('the row total includes cache writes', /3,000/.test(panelFText), `expected the row total 3,000 in "${panelFText.slice(0, 90)}"`)
+
+// G — an older SDK without `Button` or the icon set: the panel must still render a
+// working refresh control instead of an invalid element type.
+const winG = await mount(toModule(code, 'plugin-winG.mjs', stubPathFor(WINDOWS.g)))
+const panelG = [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)
+
+edgeAssert('missing Button/icons mounts clean', winG.failures.length === 0 && !winG.boundaryCaught, winG.failures[0] ?? 'boundary hit')
+edgeAssert('missing Button/icons still shows a refresh control', Boolean(panelG?.querySelector('button')), 'no button rendered')
+edgeAssert('the fallback glyph is used', /↻/.test(panelG?.textContent ?? ''), (panelG?.textContent ?? '').slice(0, 60))
+
+// A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
+for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
+  globalThis['__stEvents_A']['session.usage']({ payload, session_id: WINDOWS.a.runtime, type: 'session.usage' })
+}
+await wait(250)
+
+const screenText = document.body.textContent ?? ''
+
+edgeAssert('garbage payloads paint nothing invalid', !/NaN|undefined|Infinity/.test(screenText), (screenText.match(/NaN|undefined|Infinity/) ?? [''])[0])
+
+// A — session switch inside ONE window: the new session's figures must take over,
+// and the old runtime id must stop being accepted.
+globalThis.__stSetSession_A?.('storedS2', 'rtS2')
+await wait(300)
+
+const beforeSwitch = windowA.container.textContent ?? ''
+
+globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total: 4200 } }, session_id: 'rtS2', type: 'session.usage' })
+await wait(250)
+
+const afterNewSession = windowA.container.textContent ?? ''
+
+edgeAssert('the new session is adopted after a switch', afterNewSession !== beforeSwitch, 'the chip ignored the new session')
+
+globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total: 88888888 } }, session_id: WINDOWS.a.runtime, type: 'session.usage' })
+await wait(250)
+
+edgeAssert('the previous session stops counting', !((windowA.container.textContent ?? '').includes('88,888,888')), 'a tick from the abandoned session was adopted')
+
+if (edge.length) {
+  console.error('\nFAIL (edge cases) — a situation the chip must survive:\n' + edge.map(item => `  • ${item}`).join('\n'))
   fs.rmSync(tmph, { force: true, recursive: true })
   process.exit(1)
 }

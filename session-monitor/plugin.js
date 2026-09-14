@@ -64,6 +64,12 @@ const ID = 'session-monitor'
 
 /** Idle poll: catches writes this process did not make (cron, subagents, another window). */
 const POLL_MS = 15_000
+
+// Older desktop builds may not export `Button` or the icon set. Falling back costs a
+// few lines; letting `undefined` reach React costs `Element type is invalid` inside
+// the popover, which is a contained but ugly failure.
+const RefreshButton = typeof Button === 'function' ? Button : 'button'
+const RefreshIcon = icons?.RefreshCw ?? null
 /** Chars per token for the streamed-text term. English prose ≈ 4; code/JSON runs denser. */
 const CHARS_PER_TOKEN = 4
 
@@ -494,16 +500,20 @@ function TokenPanel({ stats }) {
         // `title` rather than the SDK's Tip: the app tooltip was removed from this
         // plugin on request and the smoke test fails if a Tip comes back.
         jsx(
-          Button,
+          RefreshButton,
           {
             'aria-label': 'Refresh',
-            className: 'text-muted-foreground hover:text-foreground',
+            className: cn(
+              'text-muted-foreground hover:text-foreground',
+              RefreshButton === 'button' && 'px-1 text-[0.6875rem] leading-none'
+            ),
             disabled: refreshing,
             onClick: onRefresh,
-            size: 'icon-xs',
             title: 'Refresh',
-            variant: 'ghost',
-            children: jsx(icons.RefreshCw, { className: cn(refreshing && 'animate-spin') })
+            ...(RefreshButton === 'button' ? { type: 'button' } : { size: 'icon-xs', variant: 'ghost' }),
+            children: RefreshIcon
+              ? jsx(RefreshIcon, { className: cn(refreshing && 'animate-spin') })
+              : jsx('span', { className: cn(refreshing && 'opacity-50'), children: '↻' })
           },
           'refresh'
         )

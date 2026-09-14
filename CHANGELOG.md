@@ -99,11 +99,25 @@ below are the release-level summary.
 - **The context window follows the model** — switching models clears the stale
   limit (the row reads `—`) and triggers a fresh read, instead of leaving the
   previous model's window on screen.
+- **SDK fallbacks** — on an older desktop build without `Button` or the icon set, the
+  panel renders a plain `↻` button instead of an invalid element type.
 - **Refresh button** in the panel header — re-reads the stored session row
   immediately instead of waiting for the next poll, with the row's spinner while
   the read is in flight.
 - **Mount test** (`smoke.mjs`) — run before installing an edited copy; it fails on
   render and effect-time errors, which `node --check` cannot see.
+
+### Verification
+
+- **Static check** — the app's TypeScript over the plugin catches undeclared names
+  and use-before-declaration, the two classes that shipped bugs during development.
+- **Mount test** — behaviour, isolation and edge-case contracts, mutation-checked
+  so each one fails when the bug it describes is reintroduced. Edge cases covered:
+  a draft with no session, a failing or missing stored-row read, an older SDK without
+  `Button`/`icons`, a provider that bills cache writes, garbage payloads (null /
+  missing / non-numeric / negative / enormous), a session switch inside one window, a
+  resumed runtime id, a model switch, and failure containment for a deliberately
+  broken copy.
 
 ### Security
 
