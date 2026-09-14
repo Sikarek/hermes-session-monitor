@@ -412,21 +412,26 @@ if (!live.failures.length) {
       throw new Error(`panel width class missing ("${panelEl.className}")`)
     }
 
-    // CONTRAST CONTRACT: labels are highlighted, NUMBERS ARE NOT. So no element
-    // carrying `text-foreground` may contain a digit, and every label must carry
-    // it. (`text-foreground/90` is a different class token and is not counted.)
-    const vivid = [...panelEl.querySelectorAll('*')].filter(el => el.classList.contains('text-foreground'))
-    const vividText = vivid.map(el => (el.textContent ?? '').trim())
-    const numeric = vividText.filter(text => /\d/.test(text))
+    // CONTRAST CONTRACT: figures are highlighted, labels are quiet — the app's own
+    // Context usage convention (label: muted, value: foreground). So every numeric
+    // element must carry `text-foreground`, no label may, and the title is the only
+    // non-numeric element allowed to.
+    const vividEls = [...panelEl.querySelectorAll('*')].filter(el => el.classList.contains('text-foreground'))
+    const vividText = vividEls.map(el => (el.textContent ?? '').trim())
+    const stray = vividText.filter(text => text !== 'Session monitor' && !/\d/.test(text))
 
-    if (numeric.length) {
-      throw new Error(`numbers must never be highlighted — got: ${numeric.join(' | ').slice(0, 90)}`)
+    if (stray.length) {
+      throw new Error(`highlighted text that is not a figure: ${stray.join(' | ').slice(0, 90)}`)
     }
 
-    for (const label of ['Session monitor', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
-      if (!vividText.includes(label)) {
-        throw new Error(`label is not highlighted: "${label}" (highlighted: ${vividText.join(' | ').slice(0, 90)})`)
-      }
+    for (const label of ['Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
+      if (vividText.includes(label)) throw new Error(`label must stay muted: "${label}"`)
+    }
+
+    const figures = vividText.filter(text => /\d/.test(text))
+
+    if (figures.length < 6) {
+      throw new Error(`expected every figure highlighted (3 rows + total + rate + cost), got ${figures.length}: ${vividText.join(' | ').slice(0, 90)}`)
     }
 
     const expectedShare = ((WINDOWS.a.cacheRead / (WINDOWS.a.cacheRead + 1000 + 500)) * 100).toFixed(2) + '%'
@@ -441,7 +446,8 @@ if (!live.failures.length) {
     if (!panel.includes(expectedTotal)) throw new Error(`panel total missing (${expectedTotal}) — got: ${panel.slice(0, 160)}`)
 
     // Cost figure shown bare (the provenance parenthetical was removed on request).
-    if (!panel.includes('$1.3718')) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
+    // Cost is printed at 2 decimals, like the chip.
+    if (!panel.includes('$1.37')) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
 
     if (panel.includes('(estimated') || panel.includes('provider_models_api')) {
       throw new Error('the cost parenthetical is back — it was removed on purpose')
