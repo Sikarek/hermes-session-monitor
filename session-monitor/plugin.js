@@ -631,9 +631,16 @@ function useMonitor() {
         aggTokens += candidateTotal
 
         // A row that grew has had its live tokens folded in: drop the delta so they count once.
+        // BOTH ids — a tick carries the RUNTIME id while the row is keyed by its STORED id, and
+        // matching only the stored one left every delta unabsorbed (the totals then double-counted
+        // every running session; caught by the Overview's confirmation contract).
         const seenBefore = AGG.rowTotals.get(candidateId)
 
-        if (seenBefore === undefined || candidateTotal > seenBefore) AGG.live.delete(candidateId)
+        if (seenBefore === undefined || candidateTotal > seenBefore) {
+          AGG.live.delete(candidateId)
+
+          if (candidate.resolved_id) AGG.live.delete(candidate.resolved_id)
+        }
 
         AGG.rowTotals.set(candidateId, candidateTotal)
       }
@@ -911,13 +918,21 @@ function Chip() {
  * the per-session deltas the tick handler records for every running session.
  */
 function OverviewPane() {
-  const { overview } = useMonitor()
+  const { overview, streamed } = useMonitor()
   const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, sessions: 0, tokens: 0 }
+  // The streamed text of the session in front of you is not in any row and not yet in a tick, so
+  // it is added here: without it the totals move once per completed call, and with it they climb
+  // word by word like the chip does. Both totals then read as the recorded figures the moment a
+  // read brings them in — which is the confirmation, per row.
+  const inFlight = streamed > 0
+  const tokensShown = o.tokens + streamed
+  const rate = o.tokens > 0 && o.cost > 0 ? o.cost / o.tokens : 0
+  const costShown = o.cost + streamed * rate
+  const estimating = o.costLive || inFlight
   const rows = [
     ['Sessions counted', fmt(o.sessions)],
-    ['Total tokens', fmt(o.tokens)],
-    ['In flight now', o.liveTokens > 0 ? `~${fmt(o.liveTokens)}` : '—'],
-    ['Total cost', o.cost > 0 ? `${o.costLive ? '~' : ''}$${o.cost.toFixed(4)}` : '—']
+    ['Total tokens', `${estimating && inFlight ? '~' : ''}${fmt(tokensShown)}`],
+    ['Total cost', costShown > 0 ? `${estimating ? '~' : ''}$${costShown.toFixed(4)}` : '—']
   ]
 
   return jsxs('div', {

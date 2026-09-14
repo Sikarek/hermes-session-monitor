@@ -28,7 +28,7 @@ Cost                                              $2.1600   this session + its s
 
 Two tabs in the sidebar — **Overview** and **Session monitor** — plus the status-bar figure.
 
-The **Overview** totals every session in the profile (subagents included): total tokens, total cost, how many sessions were counted, and how much is in flight right now. It climbs while any session runs: every running session''s usage ticks are counted, and each session''s live portion is dropped as its row is written, so nothing is counted twice. The focused **Session monitor** tab is unaffected by other sessions'' activity.
+The **Overview** totals every session in the profile (subagents included): **Total tokens** and **Total cost**, plus how many sessions were counted. Both totals climb while any session runs — every running session's completed calls are counted as their ticks land, and the streamed text of the session in front of you is counted word by word — and each session's live portion is dropped as its own row is written, so nothing is counted twice. A `~` marks a figure still carrying an in-flight estimate; it disappears once the rows account for it, which is the confirmation, per row. The focused **Session monitor** tab is unaffected by other sessions' activity.
 
 
 | Row                      | Meaning                                                                                                                                            |

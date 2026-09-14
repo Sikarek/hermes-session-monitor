@@ -1021,6 +1021,16 @@ edgeAssert(
 
 // With nothing in flight the figure is the recorded value, unmarked: that is the confirmation the
 // estimate is only ever a bridge to it.
+// CONFIRMATION: the row absorbed the live deltas when it was written, so the Overview shows the
+// recorded totals unmarked — the estimate is only ever a bridge to them.
+const overviewH = () => winH.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+edgeAssert(
+  'the Overview confirms with the recorded total',
+  overviewH().includes('18,500') && !/Total tokens~/.test(overviewH()),
+  `expected the recorded total, unmarked: "${overviewH().slice(0, 110)}"`
+)
+
 edgeAssert(
   'the recorded value replaces the estimate when idle',
   !costText().startsWith('~$'),
@@ -1147,6 +1157,8 @@ edgeAssert('the grandchild is counted', panelL().includes('Subagents3,500'), 'on
 const overviewL = () => winL.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
 
 edgeAssert('the Overview totals every row', overviewL().includes('1,014,999'), `got "${overviewL().slice(0, 120)}"`)
+edgeAssert('the in-flight row is gone', !/In flight now/.test(overviewL()), 'the "In flight now" row is back')
+edgeAssert('the totals are labelled', /Total tokens/.test(overviewL()) && /Total cost/.test(overviewL()), `got "${overviewL().slice(0, 90)}"`)
 
 globalThis['__stEvents_L']['session.usage']({ payload: { usage: { total: 5000 } }, session_id: 'rtZ', type: 'session.usage' })
 await wait(150)
