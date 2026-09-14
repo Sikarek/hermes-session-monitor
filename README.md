@@ -20,43 +20,50 @@ Cost                         $1.7832
 
 ## What it shows
 
-- **Cache hit** — prompt tokens served from the provider's cache (reads + writes).
+- **Cache hit** — prompt tokens served from (or written into) the provider's cache.
 - **Cache miss** — uncached input tokens.
-- **Output** — every token the model generated (that includes its reasoning).
+- **Output** — every token the model generated, its reasoning included.
 - **Cache hit rate** — `cache_read ÷ prompt tokens`, at two decimals. Hermes' own item rounds this to a whole percent, which flattens 99.79% to "100%".
 - **Cost** — the session's recorded cost. Hermes derives it from published rates, so it is an **estimate, not a provider invoice** (see Caveats).
 
 The three token rows are a **partition**: `cache hit + cache miss + output` equals the session total exactly, so the shares add to 100% and no row is counted in another.
 
-The number climbs **while the model works**: streamed reasoning and reply text are counted chunk by chunk, and each completed API call snaps the total to the provider's real figure.
-
-## How it tracks tokens
-
-Three terms, one definition, nothing counted twice:
-
-| Term | Where it comes from |
-|---|---|
-| **Base** | the session's row in Hermes' own `state.db` (`input + output + cache_read + cache_write`) — read through the app, never parsed by hand |
-| **Completed calls** | `session.usage` events from the local gateway, **attributed strictly** to the focused session (its runtime id or stored id) |
-| **Live text** | `message.delta` (the answer) and `reasoning.delta` (the thinking), counted as they stream, ÷4 chars per token |
-
-The base makes it restart-safe — that row survives app restarts, while the agent's in-process counters reset to zero (which is why a live-only counter looks like it resets). The live terms are added on top and are zeroed when a completed call reports the real figure, so a call is counted once. `reasoning` is never added separately: the provider counts it *inside* `output` (adding it would overstate by ~56% on a reasoning-heavy session).
-
-## How it tracks cost
-
-It reads the **cost Hermes already recorded for the session** (`estimated_cost_usd` on the same row) — it does not compute pricing itself. Hermes derives that number from published model rates: `official_docs_snapshot` for Anthropic/OpenAI, `provider_models_api` (models.dev) for OpenRouter/DeepSeek and friends.
-
-So: **it is an estimate, not a provider invoice.** Hermes prices reasoning at the model's output rate (a few models publish a different reasoning rate, where the estimate would be off), and the figure covers the session's **main task only** — auxiliary work attributed to the same session (background review, title generation) is tracked separately by Hermes and isn't reachable from the app side. OpenRouter does expose a real per-generation charge, but nothing a desktop plugin can reach today.
+The number climbs **while the model works**: streamed reasoning and reply text are counted chunk by chunk (characters ÷ 4), and each completed API call snaps the total to the provider's real figure.
 
 ## Privacy & security
 
-No network calls, no telemetry, no storage, no credentials, no transcript access — the full list of what it touches (8 call sites) and how to verify it in one grep each is in **[PRIVACY.md](PRIVACY.md)**. The short version: it renders numbers the app already has, and nothing leaves your machine.
+The whole plugin is one file you can read: `desktop-plugins/session-tokens/plugin.js`. Its complete surface is **three state atoms, three event subscriptions and one session read** — that is all of it:
 
-Platforms: **macOS, Windows and Linux**. No platform-specific paths, binaries, or Node APIs — see PRIVACY.md.
+| Touches | What exactly |
+|---|---|
+| `host.state` | `focusedStoredSessionId`, `focusedSessionId`, `focusedSessionProfile` — which session the window is showing |
+| `host.onEvent` | `session.usage`, `message.delta`, `reasoning.delta` — the app's own event stream, filtered to that session |
+| `host.listPersistedSessions()` | the focused profile's session rows (the numbers it displays), every 15 s and at turn end |
+| `host.notify` | not used |
+
+**It does not:**
+
+- **read your conversation.** Streamed text passes through the handler only to be *measured* — `.length` is taken and the text is dropped. No message content, no prompts, no tool results are read, stored or shown. (There is no transcript read at all: `session.history` is not called.)
+- **make network requests.** No `fetch`, no `WebSocket`, no third-party endpoints, no telemetry. Every read goes through the app's own local backend.
+- **write anything.** No files, no `localStorage`, no `ctx.storage`, no config keys, no credentials. Uninstalling leaves nothing behind.
+- **touch secrets.** It never reads `.env`, API keys or tokens. The cost it displays is the number Hermes already stored in your session row.
+
+Verify it yourself:
+
+```bash
+grep -nE "fetch\(|XMLHttpRequest|WebSocket|localStorage|ctx\.storage|process\.|require\(" plugin.js   # no hits
+grep -o "host\.[a-zA-Z]*" plugin.js | sort | uniq -c                                                  # the 4 calls above
+```
+
+**Risk that is inherent to the platform, not this plugin:** a Hermes desktop plugin is evaluated with the app's privileges — it is not a sandbox. That is why the code is short, unminified, and documented here: read it before installing, as you would any plugin. This one sends nothing anywhere, so there is nothing to leak even in principle.
+
+## Compatibility
+
+- **macOS, Linux, Windows** — the plugin is plain ESM using only the plugin SDK, React and standard web APIs (`setInterval`, `requestAnimationFrame`). No Node APIs, no shell commands, no OS-specific paths or calls.
+- **Hermes Desktop** — any build with the status-bar contribution area and `host.listPersistedSessions`. On an older backend that lacks the session read, the chip degrades to the live counters and says `live only — no stored row for this session` instead of inventing a total.
+- The app-level plugin root is resolved per machine, so it also works when the window is pointed at a **remote or cloud** gateway (the plugin still loads locally).
 
 ## Install
-
-Requires the Hermes Desktop app (this is an app-side plugin; the CLI/gateway alone won't render it).
 
 ```bash
 git clone https://github.com/Sikarek/hermes-session-monitor.git
@@ -86,12 +93,13 @@ The app watches that folder — the chip appears within a second. If it doesn't,
 | Live text | `message.delta` (answer) + `reasoning.delta` (thinking), counted as they stream | no — zeroed by the next completed call |
 
 - **The base is Hermes' own definition**: `input + output + cache_read + cache_write` — the same "Total tokens" as `agent/insights.py` and the units of `session_total_tokens`. Reasoning is a *detail inside* `output`, never added.
-- **Per-session isolation**: every term is attributed by session id (the focused session's runtime id or its stored id) — no guessing. A `session.usage` event from another session can never land in your chip.
+- **Per-session isolation**: every term is attributed by session id (the focused session's runtime id or its stored id) — no guessing, no "accept anything while busy". A `session.usage` event from another session can never land in your chip.
 - **Restart-safe**: the agent's counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
+- **Subagents are excluded on purpose** — their tokens live in their own session rows and the parent row doesn't include them, which matches what `/usage` reports.
 
 ## Development
 
-The plugin is a single plain-ESM file (`desktop-plugins/session-tokens/plugin.js`) — loaded uncompiled, no build step, hot-reloaded on save.
+The plugin is a single plain-ESM file — loaded uncompiled, no build step, hot-reloaded on save.
 
 **Before saving into a watched folder, run the mount test:**
 
@@ -99,7 +107,7 @@ The plugin is a single plain-ESM file (`desktop-plugins/session-tokens/plugin.js
 node desktop-plugins/session-tokens/smoke.mjs
 ```
 
-It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel's rows, and **mounts a deliberately broken copy to prove the chip contains its own failures**. It fails on render *and* effect-time errors — `node --check` cannot see an undefined identifier, and a plugin throw reaches the app's ROOT error boundary (which blanks the whole window).
+It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel rows and the share column, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and finally mounts a deliberately broken copy to prove the chip contains its own failures. It fails on render *and* effect-time errors — `node --check` cannot see an undefined identifier, and a plugin throw reaches the app's ROOT error boundary (which blanks the whole window).
 
 ## Caveats
 
@@ -107,7 +115,7 @@ It stubs the plugin SDK, mounts the chip against a real React root inside an err
 - **One rate for reasoning.** Hermes prices reasoning at the model's output rate; a few models publish a *different* reasoning rate, where this estimate would be off.
 - **Main task only.** Hermes' session row excludes auxiliary work attributed to the same session (background review, title generation) — that lives in `session_model_usage` and is not reachable from the app side.
 - **Cache hit includes cache writes.** A write is a miss being cached, priced above plain input; it becomes a hit on the next call. It's 0 on routes without explicit caching (DeepSeek/OpenRouter today), so on Anthropic this number includes a chunk that wasn't strictly a hit.
-- **Subagent sessions are excluded** on purpose — their tokens live in their own rows, and the parent row doesn't include them. This matches what `/usage` reports.
+- **Per-word counting is an estimate.** Streamed text is measured at ~4 characters per token until the call's real total arrives.
 
 ## License
 

@@ -31,6 +31,21 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
+ * PANEL — three rows that PARTITION the session total (Cache hit = cache read +
+ * cache write, Cache miss = uncached input, Output = generation incl. reasoning),
+ * then a hairline and two derived figures (cache hit rate, cost). Shares are all
+ * of the session total, so they sum to 100%.
+ *
+ * WHAT IT READS — the complete surface, verifiable by reading this file:
+ *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile
+ *   · host.onEvent: session.usage, message.delta, reasoning.delta
+ *   · host.listPersistedSessions(): the focused profile's session rows, refreshed
+ *     every POLL_MS and at turn end
+ * It never reads prompt or message content — streamed text is measured with
+ * `.length` and dropped, only a character count is kept — never writes files or
+ * storage, never touches config or credentials, and makes no network requests of
+ * its own: every read goes through the app's own local backend.
+ *
  * Plain ESM — loaded uncompiled, jsx() only. Imports limited to
  * @hermes/plugin-sdk + react.
  */
@@ -74,20 +89,12 @@ function Chip() {
   const storedId = useValue(host.state.focusedStoredSessionId)
   const runtimeId = useValue(host.state.focusedSessionId)
   const profile = useValue(host.state.focusedSessionProfile)
-  const busy = useValue(host.state.busy)
 
   const [base, setBase] = useState(null) // stored row buckets
   // 'pending' until the row read settles. Without this the chip painted
   // base(null→0) + grown(live total) on mount — i.e. the PROCESS-local counter
   // (~45M) instead of the SESSION total (~92M) for the first ~100ms.
   const [rowState, setRowState] = useState('pending')
-  // Output composition: prose vs tool-call arguments, apportioned out of
-  // (output - reasoning). Not in the session row — it comes from the transcript
-  // (`session.history`), fetched lazily when the panel is opened, cached per
-  // message_count so it costs one call per turn at most.
-  const [split, setSplit] = useState(null)
-  const opened = useRef(false)
-  const [source, setSource] = useState('reading stored row…')
   const [, repaint] = useState(0)
 
   const live = useRef(0) // completed-call counters for the focused runtime session
@@ -95,27 +102,16 @@ function Chip() {
   const chars = useRef(0) // characters streamed since the last accounted call
   const chunks = useRef(0) // chunks since the last accounted call
   const lastChunkAt = useRef(0) // arrival time of the previous chunk
-  const tickAt = useRef(0) // arrival time of the previous tick
   const best = useRef(0) // highest total rendered this session (monotonic guard)
   const frame = useRef(0)
   const storedRef = useRef(storedId)
   const runtimeRef = useRef(runtimeId)
-  const busyRef = useRef(busy)
   // Events for one chat arrive under DIFFERENT ids depending on the emitter
   // (observed: usage/message.delta on one, thinking.delta/session.info on
   // another), so match an alias set rather than a single id.
-  const aliases = useRef(new Set())
-  const foreign = useRef(new Set()) // subagent child sids — never counted
-  const seenTypes = useRef(new Set())
 
   storedRef.current = storedId
   runtimeRef.current = runtimeId
-  busyRef.current = busy
-
-  if (aliases.current.size === 0 || !aliases.current.has(storedId)) {
-    if (storedId) aliases.current.add(storedId)
-    if (runtimeId) aliases.current.add(runtimeId)
-  }
 
   // Repaint on the next animation frame after a change: ≤16ms of latency, and
   // chunks arrive faster than any display can show. No tween — the rendered
@@ -143,15 +139,7 @@ function Chip() {
     // "0734c261" == sid "0734c261").
     const forFocused = id => Boolean(id) && (id === runtimeRef.current || id === storedRef.current)
 
-    // Child sids seen on subagent events — never counted as the user's own text.
-    const rememberChild = event => {
-      const childId = event.payload?.child_session_id
-
-      if (typeof childId === 'string' && childId) foreign.current.add(childId)
-    }
-
     const countText = event => {
-      if (foreign.current.has(event.session_id)) return // a subagent's words, not this session's
       if (!forFocused(event.session_id)) return
 
       const text = event.payload?.text
@@ -183,21 +171,6 @@ function Chip() {
     }
 
     const offs = [
-      // Learn the runtime id behind the focused STORED id (ids differ per emitter).
-      host.onEvent('session.info', event => {
-        if (event.payload?.stored_session_id !== storedRef.current) return
-
-        if (event.session_id) aliases.current.add(event.session_id)
-      }),
-      // Subagent (delegate_task) work runs in CHILD sessions whose tokens live in
-      // their own state.db rows — the parent row does NOT include them — yet the
-      // backend relays each child's text as `message.delta` / `reasoning.delta`
-      // under the CHILD's sid (`agent_callbacks.py::_CHILD_DELTA_EVENTS`). Counting
-      // those would inflate the user's session total, so every child sid is
-      // recorded here and excluded from the text term.
-      host.onEvent('subagent.start', rememberChild),
-      host.onEvent('subagent.progress', rememberChild),
-      host.onEvent('subagent.complete', rememberChild),
       // Completed calls — the ONLY source of the live term (see the note on the
       // fused atom above). Strictly attributed, so one window can never count
       // another session's tokens.
@@ -248,7 +221,6 @@ function Chip() {
       liveAtFetch.current = live.current
       setBase(null)
       setRowState('unavailable')
-      setSource('no session yet')
       return
     }
 
@@ -268,8 +240,6 @@ function Chip() {
           cacheRead: n(row.cache_read_tokens),
           cacheWrite: n(row.cache_write_tokens),
           in: n(row.input_tokens),
-          messages: n(row.message_count),
-          reasoning: n(row.reasoning_tokens),
           // Cost as Hermes records it. NOTE: this is an ESTIMATE derived from the
           // model's published rates (cost_status 'estimated'); OpenRouter's own
           // per-generation charge is not persisted anywhere locally, so it cannot
@@ -294,16 +264,13 @@ function Chip() {
           out: n(row.output_tokens),
           total: tokenCount(row)
         })
-        setSource('stored row + live counts')
         return
       }
 
       setRowState('unavailable')
-      setSource('live only — no stored row yet')
     } catch (error) {
       liveAtFetch.current = liveNow
       setRowState('unavailable')
-      setSource(`live only — ${error?.message ?? 'stored read unavailable'}`)
     }
   }, [profile, storedId])
 
