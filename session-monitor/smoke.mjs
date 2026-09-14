@@ -70,6 +70,8 @@ const stubFor = w => {
   const cacheWrite = String(w.cacheWrite ?? 0)
   const ROW_EXTRA = JSON.stringify(`__stRowExtra_${w.key}`)
   const ADD_ROW_EXTRA = JSON.stringify(`__stAddRowExtra_${w.key}`)
+  const BREAKDOWN = JSON.stringify(`__stBreakdown_${w.key}`)
+  const BREAKDOWN_CALLS = JSON.stringify(`__stBreakdownCalls_${w.key}`)
   const READ_THROWS = w.readThrows ? 'true' : 'false'
   const LIST_READ = w.noRowMethod
     ? 'listPersistedSessions: undefined,'
@@ -130,7 +132,14 @@ export const host = {
   },
   notify: () => 'toast', notifyError: () => 'toast', navigate: () => {},
   onEvent: (type, handler) => { EVENTS[type] = handler; return () => delete EVENTS[type] },
-  request: async method => {
+  request: async (method, params) => {
+    if (method === 'session.context_breakdown') {
+      globalThis[${BREAKDOWN_CALLS}] = (globalThis[${BREAKDOWN_CALLS}] ?? 0) + 1
+
+      // A backend with nothing measured yet answers zeros; the test windows that
+      // want a painted row set their own breakdown object.
+      return globalThis[${BREAKDOWN}] ?? { categories: [], context_estimated: false, context_max: 0, context_percent: 0, context_used: 0 }
+    }
     if (method === 'session.history') {
       // 3 assistant messages (300 chars of prose) + 2 tool calls (100 chars of args)
       return { count: 5, messages: [
@@ -201,7 +210,9 @@ const WINDOWS = {
   e: { cacheRead: 1000, key: 'E', noRowMethod: true, runtime: 'rtE', stored: 'storedE' }, // older desktop build
   f: { cacheRead: 1000, cacheWrite: 500, key: 'F', runtime: 'rtF', stored: 'storedF' }, // provider that bills cache writes
   g: { cacheRead: 1000, key: 'G', noButton: true, runtime: 'rtG', stored: 'storedG' }, // older SDK: no Button/icons
-  h: { cacheRead: 10000, key: 'H', runtime: 'rtH', stored: 'storedH' } // refresh/anchor accounting
+  h: { cacheRead: 10000, key: 'H', runtime: 'rtH', stored: 'storedH' }, // refresh/anchor accounting
+  i: { cacheRead: 5000, key: 'I', runtime: 'rtI', stored: 'storedI' }, // context pull: no push payloads
+  j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' } // a plugin mounted mid-session
 }
 
 const stubPathFor = window => {
@@ -415,24 +426,38 @@ if (!live.failures.length) {
       throw new Error(`streamed chunks did not reach the total: expected "${expected}" in "${after.trim().slice(0, 90)}" (was "${before.trim().slice(0, 60)}")`)
     }
 
-    // COMPLETED-CALL contract: a `session.usage` tick for THIS session must be
-    // adopted. This path was untested while it shipped a ReferenceError — the
-    // app's listener wrapper swallows handler throws, so the chip silently kept
-    // an estimate instead of the real total and every test still passed.
-    const usageTotal = 5000 // fresh process: the runtime counter starts at 0
+    // COMPLETED-CALL contract: `total` is the agent PROCESS's cumulative counter for
+    // the session, so the first tick of a plugin lifetime is a BASELINE — the stored
+    // row already contains most of a process cumulative, and claiming it as growth is
+    // what made the chip show a wrong total until the next session switch.
+    const baseline = 5000
+    const grown = 9000
 
     globalThis['__stEvents_A']['session.usage']({
-      payload: { usage: { total: usageTotal } },
+      payload: { usage: { total: baseline } },
       session_id: WINDOWS.a.runtime,
       type: 'session.usage'
     })
     await wait(250)
 
-    const afterUsage = container.textContent ?? ''
-    const expectedAfterUsage = (stored + usageTotal).toLocaleString('en-US')
+    const afterBaseline = container.textContent ?? ''
 
-    if (!afterUsage.includes(expectedAfterUsage)) {
-      throw new Error(`a matching usage tick was not adopted: expected ${expectedAfterUsage} in "${afterUsage.trim().slice(0, 90)}"`)
+    if (afterBaseline.includes((stored + baseline).toLocaleString('en-US'))) {
+      throw new Error(`the baseline tick was claimed as growth: "${afterBaseline.trim().slice(0, 60)}"`)
+    }
+
+    globalThis['__stEvents_A']['session.usage']({
+      payload: { usage: { total: grown } },
+      session_id: WINDOWS.a.runtime,
+      type: 'session.usage'
+    })
+    await wait(250)
+
+    const afterGrowth = container.textContent ?? ''
+    const expectedGrowth = (stored + (grown - baseline)).toLocaleString('en-US')
+
+    if (!afterGrowth.includes(expectedGrowth)) {
+      throw new Error(`growth after the baseline was not counted: expected ${expectedGrowth} in "${afterGrowth.trim().slice(0, 90)}"`)
     }
 
     // CONTEXT CONTRACT: the window paints from an attributed usage payload. The
@@ -515,7 +540,7 @@ if (!live.failures.length) {
     })
     await wait(150)
     globalThis['__stEvents_A']['session.usage']({
-      payload: { usage: { total: 9000 } },
+      payload: { usage: { total: 13000 } },
       session_id: resumedRuntime,
       type: 'session.usage'
     })
@@ -789,36 +814,40 @@ const tickH = total =>
   })
 const rowH = 1000 + 500 + WINDOWS.h.cacheRead // input + output + cache_read (+ 0 write)
 
-tickH(5000)
+tickH(5000) // the baseline: the first tick of this plugin lifetime claims nothing
 await wait(200)
-edgeAssert('a tick is counted', chipH() === rowH + 5000, `expected ${(rowH + 5000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`)
+edgeAssert('the baseline tick claims no growth', chipH() === rowH, `expected ${rowH.toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`)
+
+tickH(9000)
+await wait(250)
+edgeAssert('growth after the baseline is counted', chipH() === rowH + 4000, `expected ${(rowH + 4000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`)
 
 const beforeRefreshH = chipH()
 
-document.querySelector('[data-slot="session-monitor-panel"]') && [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1).querySelector('button')?.click()
+;[...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1).querySelector('button')?.click()
 await wait(400)
 
 edgeAssert('a refresh does not move the total', chipH() === beforeRefreshH, `was ${beforeRefreshH.toLocaleString('en-US')}, now ${chipH().toLocaleString('en-US')}`)
 
-tickH(9000)
+tickH(12000)
 await wait(250)
 
 edgeAssert(
   'counting continues after a refresh',
-  chipH() === rowH + 9000,
-  `expected ${(rowH + 9000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')} — the refresh discarded the live term`
+  chipH() === rowH + 7000,
+  `expected ${(rowH + 7000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')} — the refresh discarded the live term`
 )
 
 // The turn ends and the row is written: the anchor moves, and the tokens already
 // counted live must not be added a second time.
-globalThis.__stAddRowExtra_H?.(9000)
+globalThis.__stAddRowExtra_H?.(7000)
 ;[...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1).querySelector('button')?.click()
 await wait(400)
 
 edgeAssert(
   'a row advance neither double-counts nor drops',
-  chipH() === rowH + 9000,
-  `expected ${(rowH + 9000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
+  chipH() === rowH + 7000,
+  `expected ${(rowH + 7000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
 )
 
 tickH(15000)
@@ -826,9 +855,56 @@ await wait(250)
 
 edgeAssert(
   'counting resumes from the new anchor',
-  chipH() === rowH + 15000,
-  `expected ${(rowH + 15000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
+  chipH() === rowH + 10000,
+  `expected ${(rowH + 10000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
 )
+
+// J — THE WRONG TOTAL (the second reported bug): a plugin mounted mid-session sees a
+// process cumulative that the stored row ALREADY contains. Treating it as growth
+// inflated the chip by everything this process had written — millions of tokens —
+// until the next session switch reset the monotonic display.
+const winJ = await mount(toModule(code, 'plugin-winJ.mjs', stubPathFor(WINDOWS.j)))
+const chipJ = () => Number(((winJ.container?.textContent ?? '').match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+const tickJ = total =>
+  globalThis['__stEvents_J']['session.usage']({
+    payload: { usage: { total } },
+    session_id: WINDOWS.j.runtime,
+    type: 'session.usage'
+  })
+const rowJ = 1000 + 500 + WINDOWS.j.cacheRead
+
+tickJ(5000000) // this process has already spent five million tokens on this session
+await wait(250)
+edgeAssert('a process cumulative does not inflate the total', chipJ() === rowJ, `expected ${rowJ.toLocaleString('en-US')}, got ${chipJ().toLocaleString('en-US')}`)
+
+tickJ(5300000)
+await wait(250)
+edgeAssert('growth from that baseline is counted', chipJ() === rowJ + 300000, `expected ${(rowJ + 300000).toLocaleString('en-US')}, got ${chipJ().toLocaleString('en-US')}`)
+
+// I — THE BLANK CONTEXT ROW (the reported bug): a panel opened on an idle session
+// with nothing pushed yet must fetch the window on demand. The push payloads only
+// flow during a turn, so relying on them alone left the row blank until the next
+// call — and a refresh could not fix it, because the stored row carries no context.
+globalThis.__stBreakdown_I = { categories: [], context_estimated: true, context_max: 1000000, context_percent: 42, context_used: 421888 }
+
+const winI = await mount(toModule(code, 'plugin-winI.mjs', stubPathFor(WINDOWS.i)))
+const chipI = winI.container?.textContent ?? ''
+const panelI = [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)
+const panelIText = panelI?.textContent ?? ''
+
+edgeAssert('the context row is pulled on open', panelIText.includes('~421,888 / 1,000,000 · 42%'), `got "${panelIText.slice(0, 90)}"`)
+edgeAssert('the pull used the breakdown RPC', (globalThis.__stBreakdownCalls_I ?? 0) > 0, 'no session.context_breakdown request was made')
+edgeAssert('no push payload was needed', !chipI.includes('Context—'), 'the row was blank')
+
+// A refresh re-pulls: the transcript moves on between turns, and the user asking to
+// refresh expects the window to move with it.
+globalThis.__stBreakdown_I = { categories: [], context_estimated: false, context_max: 1000000, context_percent: 51, context_used: 512000 }
+panelI?.querySelector('button')?.click()
+await wait(400)
+
+const panelIRefreshed = [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
+
+edgeAssert('a refresh re-pulls the window', panelIRefreshed.includes('512,000 / 1,000,000 · 51%'), `got "${panelIRefreshed.slice(0, 90)}"`)
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
@@ -845,14 +921,19 @@ edgeAssert('garbage payloads paint nothing invalid', !/NaN|undefined|Infinity/.t
 globalThis.__stSetSession_A?.('storedS2', 'rtS2')
 await wait(300)
 
-const beforeSwitch = windowA.container.textContent ?? ''
+const chipAfterSwitch = () => Number(((windowA.container.textContent ?? '').match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+const tickNew = total =>
+  globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total } }, session_id: 'rtS2', type: 'session.usage' })
 
-globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total: 4200 } }, session_id: 'rtS2', type: 'session.usage' })
+tickNew(4200) // the new session's first tick: its baseline (see the accounting contract)
+await wait(200)
+tickNew(5200) // growth of 1,000 on top of it
 await wait(250)
 
-const afterNewSession = windowA.container.textContent ?? ''
-
-edgeAssert('the new session is adopted after a switch', afterNewSession !== beforeSwitch, 'the chip ignored the new session')
+// This fixture has no stored row for the new session, so the total is the live growth
+// alone — which is exactly what proves the switch re-anchored rather than kept counting
+// the previous session.
+edgeAssert('the new session is adopted after a switch', chipAfterSwitch() === 1000, `expected 1,000, got ${chipAfterSwitch().toLocaleString('en-US')}`)
 
 globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total: 88888888 } }, session_id: WINDOWS.a.runtime, type: 'session.usage' })
 await wait(250)

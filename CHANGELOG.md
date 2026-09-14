@@ -67,6 +67,19 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 - **An idle window could inherit a busy session's numbers** — strict per-window
   attribution (runtime id or stored id only) replaced the fused
   `host.state.focusedUsage` atom and the "accept unknown ids while busy" fallback.
+- **The context row could stay blank** — it only painted from payloads pushed during a
+  turn, so a panel opened on an idle session (or right after the plugin reloaded) showed
+  `—` until the next call, and refreshing could not help because the stored row carries
+  no context. The row is now also pulled on demand via `session.context_breakdown`
+  addressed to this window's session id (the same read the app's own Context usage panel
+  makes: an estimate from the live prompt, no provider call), on panel open, on refresh
+  and at turn end.
+- **A wrong total could stick until a tab switch** — `session.usage` carries the agent
+  *process's* cumulative counter, while the stored row accumulates across processes, so
+  the row already contains most of that counter. Claiming the first tick of a plugin
+  lifetime as growth inflated the chip by everything the process had written (millions of
+  tokens) until the monotonic display was reset by a session switch. The first tick is now
+  a baseline, and a clearly regressed counter rebases instead of freezing.
 - **A manual refresh could stop the live counter** — the value the live counter is
   measured against was re-snapshotted on *every* row read, so each refresh (and each
   15-second poll) discarded the growth counted so far, and the monotonic display then

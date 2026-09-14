@@ -78,7 +78,7 @@ The total is assembled from three sources, in this order:
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
-- **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those same two event payloads, so it shows `—` until the first one arrives and a `~` when the backend marks the figure as estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
+- **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those two event payloads, and — when nothing has been pushed yet — from an on-demand `session.context_breakdown` read addressed to this window's session id, so a panel opened on an idle session is never blank. A `~` marks the figure the backend calls estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
 - **Reads never disturb the live term** — the anchor the live counter is measured against only advances when the *stored row* does, i.e. when a turn ends and is written. Reading the row (the 15-second poll, or the refresh button) therefore leaves the growth already counted in place; refreshing mid-turn cannot stall the counter.
 - **Resumed sessions re-attach on their own** — a resumed session runs under a new runtime id; its own `session.info` (which carries the stored id, so it is proof rather than a guess) teaches the chip that id, and the live ticks are attributed again. Without that step the counter would freeze until the window's own state refreshed.
 
@@ -100,7 +100,7 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 ## Privacy & security
 
-The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — four state atoms, four event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
+The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — four state atoms, four event subscriptions and two reads — is listed below and can be verified line by line: the source ships unminified.
 
 | Host call                             | Purpose                                                     |
 | ------------------------------------- | ----------------------------------------------------------- |
@@ -113,6 +113,7 @@ The plugin displays numbers the app already has. It makes **no network requests 
 | `host.onEvent('message.delta')`     | The answer's streamed text (measured, not kept)             |
 | `host.onEvent('reasoning.delta')`   | The reasoning's streamed text (measured, not kept)          |
 | `host.listPersistedSessions()`      | The focused profile's session rows — the figures displayed |
+| `host.request('session.context_breakdown', {session_id})` | The context window for THIS session's id (an estimate from the live prompt + tools + transcript: no provider call, no cache impact) |
 
 **It does not:**
 
@@ -132,8 +133,10 @@ grep -nE "fetch\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage|ctx\.stor
 #    → no output
 
 # 2) every host call site, with its count
-grep -oE "host\.(onEvent\('[a-z.]+'|state\.[a-zA-Z]+|listPersistedSessions)" plugin.js | sort | uniq -c
+grep -oE "host\.(onEvent\('[a-z.]+'|state\.[a-zA-Z]+|listPersistedSessions|request)" plugin.js | sort | uniq -c
 #    → 3 host.listPersistedSessions          (1 call + 2 comment mentions)
+#    → 3 host.request                          (1 call + 2 mentions: the docstring
+#                                             and the typeof guard)
 #    → 1 host.onEvent('message.delta'
 #    → 1 host.onEvent('reasoning.delta'
 #    → 1 host.onEvent('session.info'
@@ -225,6 +228,8 @@ Edge cases — each is a situation the chip meets in the field:
 | A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no `NaN`, no `undefined` |
 | A session switch inside one window | The new session takes over; the abandoned one stops counting |
 | A model switch | The context window clears and a fresh read is triggered |
+| A panel opened on an idle session, nothing pushed yet | The window is fetched on demand instead of staying blank |
+| A plugin mounted mid-session (a process cumulative far above the row) | The total stays correct — the first tick is a baseline, not spend |
 | A manual refresh (or the 15 s poll) while the model works | The live term survives; the counter keeps climbing, and a row advance is not counted twice |
 | A deliberately broken copy of the plugin | The error boundary contains it; the app root is never reached |
 

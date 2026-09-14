@@ -14,8 +14,12 @@
  *
  *  · COMPLETED CALLS — `session.usage` events **attributed strictly** to this
  *    window's focused session (runtime id, stored id, or the runtime id learned
- *    from that session's own `session.info` — the resume case), measured against an
- *    anchor that advances ONLY when the stored row itself does: a row advance means
+ *    from that session's own `session.info` — the resume case). The payload's total
+ *    is the agent process's cumulative counter for the session, so the FIRST tick of
+ *    a plugin lifetime is taken as a baseline (the stored row already contains most
+ *    of it) and a regressed counter rebases the same way. Growth is measured
+ *    against an anchor that otherwise advances ONLY when the stored row itself
+ *    does: a row advance means
  *    the tokens counted live are now persisted, so the live term restarts from the
  *    row. Ordinary polls and manual refreshes leave the term untouched. The fused `host.state.focusedUsage` atom is NOT used:
  *    the app merges rather than replaces that store, so an idle window could
@@ -48,6 +52,9 @@
  *   · host.onEvent: session.usage, session.info, message.delta, reasoning.delta
  *   · host.listPersistedSessions(): the focused profile's session rows, refreshed
  *     every POLL_MS and at turn end
+ *   · host.request('session.context_breakdown', {session_id}): the window estimate,
+ *     pulled when the panel opens, on refresh, and at turn end — this session's id
+ *     only, so the answer is always this session's
  * It never reads prompt or message content — streamed text is measured with
  * `.length` and dropped, only a character count is kept — never writes files or
  * storage, never touches config or credentials, and makes no network requests of
@@ -113,11 +120,13 @@ function Chip() {
   // Context window of the focused session — `used / max` and the percentage.
   // Fed only from payloads already attributed to this session (see takeContext).
   const [ctx, setCtx] = useState(null)
+  const ctxRef = useRef(null) // mirror with a stable read path for the pullers
   const [, repaint] = useState(0)
 
   const live = useRef(0) // completed-call counters for the focused runtime session
   const liveAnchor = useRef(0) // counter value the current base row already includes
   const rowTotalRef = useRef(0) // stored total at the last read — detects a row advance
+  const tickSeen = useRef(false) // has this plugin lifetime seen the counter's baseline yet
   const chars = useRef(0) // characters streamed since the last accounted call
   const chunks = useRef(0) // chunks since the last accounted call
   const lastChunkAt = useRef(0) // arrival time of the previous chunk
@@ -165,7 +174,10 @@ function Chip() {
     const max = n(usage.context_max)
 
     if (used > 0 || max > 0) {
-      setCtx({ estimated: Boolean(usage.context_estimated), max, percent: n(usage.context_percent), used })
+      const next = { estimated: Boolean(usage.context_estimated), max, percent: n(usage.context_percent), used }
+
+      ctxRef.current = next
+      setCtx(next)
     }
   }, [])
 
@@ -225,7 +237,12 @@ function Chip() {
 
         takeContext(usage)
 
-        if (typeof total === 'number' && total > live.current) onTick(total)
+        if (
+          typeof total === 'number' &&
+          (total > live.current || !tickSeen.current || total < live.current * 0.5)
+        ) {
+          onTick(total)
+        }
       }),
       // `session.info` carries the same usage snapshot when a session is opened or
       // resumed — the only way the context row paints before the next API call.
@@ -259,15 +276,53 @@ function Chip() {
   // merges rather than replaces that store, so a window whose session is idle can
   // inherit ANOTHER session's numbers — which is how one session's chip made an
   // idle session's chip climb.
+  // The push payloads only flow while a turn runs, so a panel opened on an idle
+  // session (or right after this plugin reloads) had nothing to paint and stayed
+  // blank until the next call. This is the same on-demand read the app's own Context
+  // usage panel makes — `session.context_breakdown` answers for a session that has
+  // not spoken yet (it estimates from the live system prompt + tools + transcript:
+  // a read-only chars/4 pass, no provider call, no cache impact) — and it is
+  // addressed to THIS window's session id, so the answer cannot be another session's.
+  const pullContext = useCallback(
+    async ({ force = false } = {}) => {
+      if (!force && ctxRef.current !== null) return // pushed (measured) data beats an estimate
+      if (typeof host.request !== 'function') return
+      if (!runtimeId) return // a draft has no session to ask about
+
+      try {
+        const breakdown = await host.request('session.context_breakdown', { session_id: runtimeId })
+
+        takeContext(breakdown)
+      } catch {
+        // Older backend without the method (or a gateway hiccup): the push payloads
+        // remain the source, and the row stays — rather than inventing a number.
+      }
+    },
+    [runtimeId, takeContext]
+  )
+
   const onTick = useCallback(
     total => {
-      // `total` is the runtime session's CUMULATIVE counter (process-local, so it
-      // restarts at zero on resume); the growth the stored row is missing is
-      // therefore `total - liveAnchor`, computed where the total is rendered.
-      // NOTE: this handler once carried a tokens-per-second estimate that
-      // referenced a variable nothing declared — the throw was swallowed by the
-      // app's listener wrapper, so the chip silently stopped adopting real
-      // totals. Duration measurement lives nowhere now; keep this handler pure.
+      // `total` is the agent PROCESS's cumulative counter for this session
+      // (`agent.session_total_tokens`), while the stored row accumulates across
+      // processes. The row therefore already contains most of the counter at any
+      // moment, so the first tick of this plugin lifetime is a BASELINE, not growth:
+      // counting it as growth inflated the total by everything this process had
+      // written so far (millions of tokens, visible until the next session switch,
+      // which is the "wrong total until I switch tabs" report).
+      //
+      // A clear regression (the counter is far below the last one) means the agent
+      // process restarted its counters — a resume. Rebase there rather than freeze;
+      // again claiming nothing, because the row, not the counter, holds what was
+      // already written.
+      const first = !tickSeen.current
+      const restarted = !first && total < live.current * 0.5
+
+      if (first || restarted) {
+        liveAnchor.current = total
+        tickSeen.current = true
+      }
+
       live.current = total
       chars.current = 0 // this call's text is inside `total` now
       schedule()
@@ -352,10 +407,11 @@ function Chip() {
 
     try {
       await load()
+      await pullContext({ force: true })
     } finally {
       setRefreshing(false)
     }
-  }, [load])
+  }, [load, pullContext])
 
 
   // Session switch: every term belongs to the previous session.
@@ -368,6 +424,8 @@ function Chip() {
     aliasRef.current = null
     liveAnchor.current = 0
     rowTotalRef.current = 0
+    tickSeen.current = false
+    ctxRef.current = null
     setBase(null)
     setCtx(null)
     setRowState('pending')
@@ -381,8 +439,10 @@ function Chip() {
     live.current = 0
     liveAnchor.current = 0
     rowTotalRef.current = 0
+    tickSeen.current = false
     chars.current = 0
     aliasRef.current = null
+    ctxRef.current = null
     setCtx(null)
     void load()
   }, [load, runtimeId])
@@ -398,12 +458,14 @@ function Chip() {
     modelRef.current = model
     setCtx(null)
     void refresh()
+    void pullContext({ force: true })
   }, [model, refresh])
 
   // Turn end is when the row is written — pick it up, and stop polling while working.
   useEffect(() => {
     chars.current = 0
     void load()
+    void pullContext()
 
     const timer = setInterval(() => void load(), POLL_MS)
 
@@ -472,7 +534,7 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, {
-          stats: { base, ctx, grown, onRefresh: refresh, refreshing, rowState, streamed, total }
+          stats: { base, ctx, grown, onPull: pullContext, onRefresh: refresh, refreshing, rowState, streamed, total }
         })
       })
     ]
@@ -485,9 +547,22 @@ function Chip() {
  * muted, figure full contrast), a hairline before the derived figures.
  */
 function TokenPanel({ stats }) {
-  const { base, ctx, grown, onRefresh, refreshing, rowState, streamed, total } = stats
+
+  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, streamed, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
+  // The popover mounts on open (Radix), so this is "the user looked at the panel":
+  // the moment to fetch the context window if nothing has pushed one yet. Declared
+  // after the destructuring above — a dep array is evaluated during render, so
+  // naming `onPull` earlier would sit in its temporal dead zone.
+  const pulled = useRef(false)
+  useEffect(() => {
+    if (pulled.current) return
+
+    pulled.current = true
+    void onPull()
+  }, [onPull])
+
   const estimating = grown > 0 || streamed > 0
 
   /** One label/value row. */
