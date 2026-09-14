@@ -74,6 +74,45 @@ const ID = 'session-monitor'
 /** Idle poll: catches writes this process did not make (cron, subagents, another window). */
 const POLL_MS = 15_000
 
+/**
+ * Tokens and cost of every session spawned under `rootId` — subagents (and their
+ * own subagents), from the SAME page the base row comes from: the row carries
+ * `parent_session_id`, so no extra read is needed. Child sessions keep their own
+ * rows (the parent's row does not include them), which is why they are summed
+ * separately and shown on their own line.
+ */
+function descendantsOf(page, rootId) {
+  const rows = page?.sessions ?? []
+  const byParent = new Map()
+
+  for (const row of rows) {
+    const parent = row?.parent_session_id
+    if (!parent) continue
+    if (!byParent.has(parent)) byParent.set(parent, [])
+    byParent.get(parent).push(row)
+  }
+
+  let tokens = 0
+  let cost = 0
+  let count = 0
+  const seen = new Set([rootId])
+  const queue = [rootId]
+
+  while (queue.length) {
+    for (const child of byParent.get(queue.shift()) ?? []) {
+      const id = child?.id ?? child?.resolved_id
+      if (!id || seen.has(id)) continue // cycles are impossible, but never loop
+      seen.add(id)
+      tokens += tokenCount(child)
+      cost += (n(child.actual_cost_usd) > 0 ? n(child.actual_cost_usd) : n(child.estimated_cost_usd))
+      count += 1
+      queue.push(id)
+    }
+  }
+
+  return { cost, count, tokens }
+}
+
 // Older desktop builds may not export `Button` or the icon set. Falling back costs a
 // few lines; letting `undefined` reach React costs `Element type is invalid` inside
 // the popover, which is a contained but ugly failure.
@@ -120,6 +159,8 @@ function Chip() {
   // Context window of the focused session — `used / max` and the percentage.
   // Fed only from payloads already attributed to this session (see takeContext).
   const [ctx, setCtx] = useState(null)
+  // Subagent sessions spawned under this one: tokens + cost, from the same page.
+  const [subagents, setSubagents] = useState(null)
   const ctxRef = useRef(null) // mirror with a stable read path for the pullers
   const [, repaint] = useState(0)
 
@@ -348,6 +389,8 @@ function Chip() {
       const page = await host.listPersistedSessions(null, { limit: 500, profile })
       const row = (page?.sessions ?? []).find(candidate => matches(candidate, storedId))
 
+      setSubagents(row ? descendantsOf(page, storedId) : null)
+
       if (row) {
         const rowTotal = tokenCount(row)
 
@@ -432,6 +475,7 @@ function Chip() {
     ctxRef.current = null
     setBase(null)
     setCtx(null)
+    setSubagents(null)
     setRowState('pending')
     void load()
   }, [load])
@@ -448,6 +492,7 @@ function Chip() {
     aliasRef.current = null
     ctxRef.current = null
     setCtx(null)
+    setSubagents(null)
     void load()
   }, [load, runtimeId])
 
@@ -489,8 +534,13 @@ function Chip() {
   }, [load])
 
   const baseTotal = base?.total ?? 0
+  const subagentTokens = subagents?.tokens ?? 0
+  const subagentCost = subagents?.cost ?? 0
   const grown = Math.max(0, live.current - liveAnchor.current)
   const streamed = Math.floor(chars.current / CHARS_PER_TOKEN)
+  // The session's OWN live figure (the partition rows plus the in-flight call). The
+  // monotonic guard is about this part: a stale row or an over-shooting estimate must
+  // never make the displayed number fall back.
   const computed = baseTotal + grown + streamed
 
   // Never render a SMALLER number inside one session. Two legitimate paths can
@@ -501,6 +551,9 @@ function Chip() {
   if (computed > best.current) best.current = computed
 
   const total = best.current
+  // The chip reports what the session actually cost to run, subagents included; the
+  // panel splits the two so neither figure is a mystery.
+  const chipTotal = total + subagentTokens
   // The number is the session total, so wait for the row: painting the live
   // process counter first would show a smaller, wrong figure.
   const ready = base !== null || rowState === 'unavailable'
@@ -509,7 +562,8 @@ function Chip() {
   // both cache buckets (`CanonicalUsage.prompt_tokens`).
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
 
-  const costLabel = base?.cost > 0 ? `$${base.cost.toFixed(2)}` : ''
+  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
+  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
   const trigger = jsx('button', {
@@ -528,7 +582,7 @@ function Chip() {
         }),
         jsx('span', {
           children: ready
-            ? `${fmt(total)} tok${costLabel ? ' · ' + costLabel : ''}${hitLabel ? ' · ' + hitLabel : ''}`
+            ? `${fmt(chipTotal)} tok${costLabel ? ' · ' + costLabel : ''}${hitLabel ? ' · ' + hitLabel : ''}`
             : // Before any value exists: a placeholder, never a zero that climbs.
               '… tok'
         })
@@ -550,7 +604,20 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, {
-          stats: { base, ctx, grown, onPull: pullContext, onRefresh: refresh, refreshing, rowState, streamed, total }
+          stats: {
+            base,
+            ctx,
+            grown,
+            onPull: pullContext,
+            onRefresh: refresh,
+            refreshing,
+            rowState,
+            streamed,
+            subagentCost,
+            subagents,
+            subagentTokens,
+            total
+          }
         })
       })
     ]
@@ -564,7 +631,7 @@ function Chip() {
  */
 function TokenPanel({ stats }) {
 
-  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, streamed, total } = stats
+  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, streamed, subagentCost, subagents, subagentTokens, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   // The popover mounts on open (Radix), so this is "the user looked at the panel":
@@ -579,6 +646,8 @@ function TokenPanel({ stats }) {
     void onPull()
   }, [onPull])
 
+  // This session's own cost, before the subagents are added to it.
+  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
   const estimating = grown > 0 || streamed > 0
 
   /** One label/value row. */
@@ -683,7 +752,12 @@ function TokenPanel({ stats }) {
         // sits under them instead of in the header. `~` marks a figure that still
         // contains an estimate (streamed text, or growth not yet written to the
         // stored row).
-        row('total', 'Total', `${estimating ? '~' : ''}${fmt(total)}`, { strong: true })
+        row('total', 'Total', `${estimating ? '~' : ''}${fmt(total)}`, { strong: true }),
+        // Subagent sessions run under their own rows, so they sit OUTSIDE the partition
+        // above: shown only when this session has spawned any.
+        subagents && subagentTokens > 0
+          ? row('subagents', 'Subagents', `${fmt(subagentTokens)} · $${subagentCost.toFixed(2)}`)
+          : null
       ]}),
       // Derived metrics, deliberately below a hairline: Cache hit rate and Cost are
       // computed from the session, not measured token buckets.
@@ -702,11 +776,7 @@ function TokenPanel({ stats }) {
             jsx('span', {
               className: 'tabular-nums text-foreground',
               children:
-                base?.actualCost > 0
-                  ? `$${base.actualCost.toFixed(2)}`
-                  : base?.cost > 0
-                    ? `$${base.cost.toFixed(2)}`
-                    : '—'
+                mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : '—'
             })
           ]})
         ]

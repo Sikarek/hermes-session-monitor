@@ -17,10 +17,11 @@ Context                        421,888 / 1,000,000 · 42%   the window in use
 Cache hit                                    196,470,400   prompt tokens served from — or written into — the cache
 Cache miss                                       353,194   uncached input
 Output                                           415,353   everything the model generated, reasoning included
-Total                                        197,238,947   the three rows above, added up
+Total                                        197,238,947   this session's own tokens — the three rows above, added up
+Subagents                              5,745,035 · $0.38   the sessions it spawned, and their own subagents
 ────────────────────────────────────────────────────────
 Cache hit rate                                    99.82%   two decimals; Hermes' own item rounds to a whole percent
-Cost                                               $1.78   an estimate from published rates, not an invoice
+Cost                                               $2.16   this session + its subagents, from published rates
 ```
 
 ## What it shows
@@ -31,6 +32,7 @@ Cost                                               $1.78   an estimate from publ
 | **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                               |
 | **Cache miss**     | Uncached input tokens.                                                                                                                             |
 | **Output**         | Every token the model generated, reasoning included.                                                                                               |
+| **Subagents**      | Tokens and cost of the sessions this one spawned — and of their own subagents — summed from the same page via `parent_session_id`. Shown only when there are any, and outside the partition above. |
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%".     |
 | **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                         |
 
@@ -77,7 +79,7 @@ The total is assembled from three sources, in this order:
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
-- **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
+- **Subagents are counted, on their own line** — their tokens live in their own session rows, which is why the partition above is this session's own. The panel adds a `Subagents` line (tokens · cost) and the chip's total and cost include them, summed transitively from the same page (a subagent that spawned its own is still this session's). Their *live* ticks are still refused — they carry the child's session id, and accepting unknown ids is what once let another session's work inflate this chip — so the figure updates when a child writes its row, i.e. at the end of its own turn.
 - **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those two event payloads, and — when nothing has been pushed yet — from an on-demand `session.context_breakdown` read addressed to this window's session id, so a panel opened on an idle session is never blank. The backend rejects the read for a runtime id it no longer holds (a detached or reaped session), so it is retried briefly and then re-asked by the poll and on every session change, instead of being fired once and forgotten. A `~` marks the figure the backend calls estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
 - **The counter's baseline** — `session.usage` carries the agent *process's* cumulative counter for the session, while the stored row accumulates across processes, so the row already contains most of that counter. The first tick a plugin lifetime sees is therefore taken as a baseline (claiming it as growth would inflate the chip by everything the process had written), and a clearly regressed counter — an agent restart — rebases the same way instead of freezing. After a reload the chip therefore starts from your stored total and grows from there.
 - **Reads never disturb the live term** — the anchor the live counter is measured against only advances when the *stored row* does, i.e. when a turn ends and is written. Reading the row (the 15-second poll, or the refresh button) therefore leaves the growth already counted in place; refreshing mid-turn cannot stall the counter.
@@ -175,6 +177,7 @@ grep -n "text.length" plugin.js
 - **Main task only.** The session row does not include auxiliary work attributed to the same session (background review, title generation); that data lives in `session_model_usage` and is not reachable from the app side, so it is not shown.
 - **Cache hit includes cache writes.** A write is a miss being cached — priced above plain input, counted as a hit on the next call. It is 0 on routes without explicit caching (DeepSeek, OpenRouter), so on Anthropic this row includes a portion that was not strictly a hit.
 - **Live text is an estimate.** Streamed text is counted at ≈4 characters per token until the call's real total arrives, after which the estimate is replaced.
+- **Subagent figures arrive at their turn ends.** A child writes its row when its own turn finishes, and the pick-up is the same 15-second poll; a subagent still running is not counted yet. Sessions beyond the fetched page (500 rows) are not seen.
 - **The context window is the provider's figure.** It is the size of the prompt for the last call (plus what the backend adds), so it can read lower than the session total — the session total counts every call, the window counts what is in context right now.
 
 ## Development

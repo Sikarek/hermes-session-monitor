@@ -124,6 +124,12 @@ below are the release-level summary.
 - **The context window follows the model** — switching models clears the stale
   limit (the row reads `—`) and triggers a fresh read, instead of leaving the
   previous model's window on screen.
+- **Subagent tokens and cost** — the sessions this one spawned, and their own subagents, are
+  summed from the same page via `parent_session_id` and shown on a `Subagents` line
+  (tokens · cost). The chip's total and cost include them, so it reports what running
+  the session actually cost rather than only its own row. No new host surface: the same
+  read, the same page. Live ticks from children are still refused (they carry the child's
+  session id), so the figure lands when a child writes its row.
 - **SDK fallbacks** — on an older desktop build without `Button` or the icon set, the
   panel renders a plain `↻` button instead of an invalid element type.
 - **Refresh button** in the panel header — re-reads the stored session row

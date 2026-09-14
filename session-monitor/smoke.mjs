@@ -75,6 +75,16 @@ const stubFor = w => {
   const BREAKDOWN_PARAMS = JSON.stringify(`__stBreakdownParams_${w.key}`)
   const BREAKDOWN_FAIL = JSON.stringify(`__stBreakdownFail_${w.key}`)
   const READ_THROWS = w.readThrows ? 'true' : 'false'
+  const CHILD_ROWS = (w.children ?? [])
+    .map(
+      c => `,{
+      id: ${JSON.stringify(c.id)}, parent_session_id: ${c.parent ? JSON.stringify(c.parent) : 'null'},
+      input_tokens: ${c.in ?? 0}, output_tokens: ${c.out ?? 0},
+      cache_read_tokens: ${c.cr ?? 0}, cache_write_tokens: ${c.cw ?? 0},
+      estimated_cost_usd: ${c.cost ?? 0}, actual_cost_usd: ${c.actual ?? 0}, message_count: 1
+    }`
+    )
+    .join('')
   const LIST_READ = w.noRowMethod
     ? 'listPersistedSessions: undefined,'
     : `listPersistedSessions: async () => {
@@ -89,7 +99,7 @@ const stubFor = w => {
       cost_status: 'estimated', estimated_cost_usd: 1.3718, id: ${stored},
       input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
       resolved_id: ${runtime}
-    }]
+    }${CHILD_ROWS}]
     }
   },`
   const tail = names.filter(name => !KNOWN.includes(name)).map(name => `export const ${name} = noop`).join('\n')
@@ -220,7 +230,21 @@ const WINDOWS = {
   h: { cacheRead: 10000, key: 'H', runtime: 'rtH', stored: 'storedH' }, // refresh/anchor accounting
   i: { cacheRead: 5000, key: 'I', runtime: 'rtI', stored: 'storedI' }, // context pull: no push payloads
   j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' }, // a plugin mounted mid-session
-  k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' } // pull retry + session change
+  k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' }, // pull retry + session change
+  l: {
+    // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
+    // unrelated session that must never be counted.
+    cacheRead: 10000,
+    children: [
+      { cost: 0.05, cr: 800, id: 'childL1', in: 1000, out: 200, parent: 'storedL' },
+      { actual: 0.02, cr: 400, id: 'childL2', in: 500, out: 100, parent: 'storedL' },
+      { cr: 300, id: 'gcL1', in: 100, out: 100, parent: 'childL1' },
+      { cost: 9.99, cr: 999000, id: 'otherL', in: 999, out: 0, parent: null }
+    ],
+    key: 'L',
+    runtime: 'rtL',
+    stored: 'storedL'
+  } // subagent accounting
 }
 
 const stubPathFor = window => {
@@ -942,6 +966,23 @@ await wait(600)
 
 edgeAssert('a session switch re-pulls the window', panelK().includes('770,000 / 1,000,000 · 77%'), `got "${panelK().slice(0, 90)}"`)
 edgeAssert('the re-pull asked for the NEW session id', globalThis.__stBreakdownParams_K?.session_id === 'rtK2', `asked for ${JSON.stringify(globalThis.__stBreakdownParams_K)}`)
+
+// L — SUBAGENT ACCOUNTING: a session's subagents keep their own rows, so their tokens
+// and cost are summed from the same page via `parent_session_id` (transitively — a
+// subagent that spawned its own is still this session's). The chip reports the combined
+// figure; the panel splits it. An unrelated session must never be counted.
+const winL = await mount(toModule(code, 'plugin-winL.mjs', stubPathFor(WINDOWS.l)))
+const chipL = winL.container?.textContent ?? ''
+const panelL = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
+const rowL = 1000 + 500 + WINDOWS.l.cacheRead // the session's own row: 11,500
+const kidsL = 2000 + 1000 + 500 // two subagents + one grandchild: 3,500
+
+edgeAssert('the chip counts the subagents', chipL.includes((rowL + kidsL).toLocaleString('en-US')), `expected ${(rowL + kidsL).toLocaleString('en-US')} in "${chipL.trim().slice(0, 60)}"`)
+edgeAssert('the panel has a Subagents row', panelL().includes('Subagents3,500'), `got "${panelL().slice(0, 120)}"`)
+edgeAssert('the Subagents row carries their cost', panelL().includes('$0.07'), `got "${panelL().slice(0, 120)}"`)
+edgeAssert('the chip cost is combined', chipL.includes('$1.44'), `expected $1.44 (1.3718 session + 0.07 subagents) in "${chipL.trim().slice(0, 60)}"`)
+edgeAssert('the unrelated session is not counted', !chipL.includes('999,999') && !panelL().includes('999,000') && !chipL.includes('$11.'), 'a session with no parent link leaked in')
+edgeAssert('the grandchild is counted', panelL().includes('Subagents3,500'), 'only direct children were summed')
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
