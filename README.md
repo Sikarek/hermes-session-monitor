@@ -1,6 +1,6 @@
 # hermes-session-monitor
 
-**v1.00** · MIT · macOS · Linux · Windows
+**v1.0.0** · MIT · macOS · Linux · Windows · [Changelog](CHANGELOG.md)
 
 A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** status bar. It reports how many tokens the focused session has actually processed, how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
