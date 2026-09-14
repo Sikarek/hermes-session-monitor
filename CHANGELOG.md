@@ -140,6 +140,61 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ---
 
+## [1.1.0] — 2026-09-14
+
+The monitor becomes a two-surface, session-accurate readout, and every figure gains a provenance
+rule that can be tested.
+
+### Added
+
+- **The detail view lives in the sidebar**: a pane (its own zone on the right) beside the session
+  list, with the status-bar figure opening the same view as a popover — two doors, one panel, each
+  an independent instance so closing either cannot starve the other.
+- **Subagent tokens and cost**: the sessions this one spawned, and their own subagents, summed
+  transitively from the same page via `parent_session_id` and shown on a `Subagents` line
+  (tokens · cost). The chip's total and cost include them.
+- **The context window** in the detail view: `used / max · percent` above the token rows with a fill
+  bar, from the pushed usage payloads and, when nothing has been pushed yet, from an on-demand
+  `session.context_breakdown` read addressed to this window's session — so a panel opened on an
+  idle session is never blank.
+
+### Changed
+
+- **The status-bar figure reads `tokens · hit rate · cost`**, without the `Σ` prefix.
+- **Costs print four decimals** (`$2.1600`) in the chip and the panel, showing the stored value
+  rather than a rounded figure; the cache hit rate stays at two.
+- **One history per window**: the live counters, the anchor, the high-water mark, the streamed
+  characters and the displayed values are per window rather than per view, with one event
+  subscriber and one poll — a view is mounted only while it is on screen (the pane's tab unmounts
+  with the tab, the status-bar item can be hidden), and per-view state gave a freshly opened view
+  an empty history and figures that disagreed with the other view's.
+
+### Fixed
+
+- **The context figure is stamped with the session it was measured for**, and shown only while the
+  stamp matches the chat on screen: it was the one value with no identity of its own, so a figure
+  measured for one session could sit under another indefinitely.
+- **Reads are tagged and checked before they land** (sequence and identity), so a slow read issued
+  earlier — a refresh racing the poll, or a session switch mid-read — cannot paint its row into the
+  current view, and the guards are shared with the state, since a read from one view writing into
+  the store another view is showing is the same bug wearing a different hat.
+- **The per-session reset is keyed on the whole identity** (`runtimeId|storedId`) and clears the
+  previous session's figures, so a session cannot inherit another's context, high-water mark or
+  subagent sum. A contract asserts that a previous session's tick and streamed text cannot move the
+  current one.
+- Both views agree on every figure, asserted directly (the chip and the pane must report the same
+  total after a row advance).
+
+### Known limitation
+
+- **The readout follows the focused session.** The desktop exposes two identities — the focused
+  tile and `activeSessionId` — and leading with the latter pins the context figure to one session
+  for every session, reproducibly. Keying on the focused session is what the data actually follows.
+  The consequence: if a build moves focus when you interact with something in the sessions strip,
+  the readout follows that focus. The pane therefore lives in its own zone, deliberately not docked
+  into that strip. `PREFER_ACTIVE_CHAT` at the top of the plugin switches the choice in one line if
+  a future desktop reports a live main-area id.
+
 ## [1.0.0] — 2026-09-14
 
 **First public release.** The state after the development phase above; the notes
@@ -217,4 +272,5 @@ below are the release-level summary.
   changes.
 - License: MIT.
 
+[1.1.0]: https://github.com/Sikarek/hermes-session-monitor/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Sikarek/hermes-session-monitor/releases/tag/v1.0.0
