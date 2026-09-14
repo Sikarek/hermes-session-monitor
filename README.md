@@ -32,30 +32,11 @@ The number climbs **while the model works**: streamed reasoning and reply text a
 
 ## Privacy & security
 
-The whole plugin is one file you can read: `desktop-plugins/session-tokens/plugin.js`. Its complete surface is **three state atoms, three event subscriptions and one session read** — that is all of it:
+The plugin renders numbers your app already has — **three state atoms, three event subscriptions and one session read**. It makes no network requests, writes nothing to disk or browser storage, never touches config, credentials or `.env`, and never reads your conversation: streamed text is measured (`.length`) and dropped, and there is no transcript access at all.
 
-| Touches | What exactly |
-|---|---|
-| `host.state` | `focusedStoredSessionId`, `focusedSessionId`, `focusedSessionProfile` — which session the window is showing |
-| `host.onEvent` | `session.usage`, `message.delta`, `reasoning.delta` — the app's own event stream, filtered to that session |
-| `host.listPersistedSessions()` | the focused profile's session rows (the numbers it displays), every 15 s and at turn end |
-| `host.notify` | not used |
+Commands that confirm each of those claims, with their expected output, are in **[PRIVACY.md](PRIVACY.md)**.
 
-**It does not:**
-
-- **read your conversation.** Streamed text passes through the handler only to be *measured* — `.length` is taken and the text is dropped. No message content, no prompts, no tool results are read, stored or shown. (There is no transcript read at all: `session.history` is not called.)
-- **make network requests.** No `fetch`, no `WebSocket`, no third-party endpoints, no telemetry. Every read goes through the app's own local backend.
-- **write anything.** No files, no `localStorage`, no `ctx.storage`, no config keys, no credentials. Uninstalling leaves nothing behind.
-- **touch secrets.** It never reads `.env`, API keys or tokens. The cost it displays is the number Hermes already stored in your session row.
-
-Verify it yourself:
-
-```bash
-grep -nE "fetch\(|XMLHttpRequest|WebSocket|localStorage|ctx\.storage|process\.|require\(" plugin.js   # no hits
-grep -o "host\.[a-zA-Z]*" plugin.js | sort | uniq -c                                                  # the 4 calls above
-```
-
-**Risk that is inherent to the platform, not this plugin:** a Hermes desktop plugin is evaluated with the app's privileges — it is not a sandbox. That is why the code is short, unminified, and documented here: read it before installing, as you would any plugin. This one sends nothing anywhere, so there is nothing to leak even in principle.
+One thing worth stating plainly: a desktop plugin is **not sandboxed** — it runs with the app's privileges. That is why this code ships uncompiled and unminified, and why the surface above is this small: you don't have to trust the documentation, you can read the file.
 
 ## Compatibility
 

@@ -1,49 +1,68 @@
 # Privacy & security
 
-Short version: **this plugin has no way to collect, transmit, or store your data.** It renders numbers the app already has. Everything below is checkable in `plugin.js` — it is one plain-JS file, no build step, no minification, ~560 lines.
+Short version: **this plugin has no way to collect, transmit, or store your data.** It renders numbers the app already has. Everything below is checkable in `plugin.js` — one plain-JS file, no build step, no minification, 532 lines.
 
-## What it touches — the complete list
+## The complete surface
 
-The plugin imports exactly three things: `react`, `react/jsx-runtime`, and `@hermes/plugin-sdk` (a disk-loaded plugin is restricted to those three specifiers by the host).
+A disk-loaded plugin may import only `@hermes/plugin-sdk`, `react` and `react/jsx-runtime` — this one imports nothing else. Its entire host API surface:
 
-Its entire host API surface:
-
-| Call | What it does | Reads |
+| Call | What it is | Reads |
 |---|---|---|
 | `host.state.focusedStoredSessionId` | the focused session's durable id | an atom |
 | `host.state.focusedSessionId` | its runtime id | an atom |
 | `host.state.focusedSessionProfile` | its profile name | an atom |
-| `host.state.busy` | is the focused chat working | an atom |
-| `host.onEvent('session.usage' \| 'message.delta' \| 'reasoning.delta' \| 'session.info' \| subagent.*)` | subscribes to the local gateway event stream | — |
-| `host.listPersistedSessions(null, {profile, limit})` | asks the app for the focused session's stored row | tokens, cost, message_count |
+| `host.onEvent('session.usage')` | completed-call token totals | an event |
+| `host.onEvent('message.delta')` | the answer's streamed text | an event |
+| `host.onEvent('reasoning.delta')` | the reasoning's streamed text | an event |
+| `host.listPersistedSessions(null, {profile, limit})` | the focused profile's session rows (the numbers displayed) | tokens, cost, message count |
 
-That is the whole list. There is **no** `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage`, `fs`, `process.env`, `child_process`, or `require` anywhere in the file (grep it yourself — each of those words appears zero times outside comments).
+Three atoms, three event subscriptions, one read. That is the whole list.
 
 ## What it does NOT do
 
 - **No network egress.** It cannot talk to any server — not the model provider, not OpenRouter, not a telemetry endpoint. The only data path is the local Hermes backend the app itself is connected to.
-- **No data collection or telemetry.** Nothing is sent anywhere, ever. There is no analytics, no identifier, no ping.
-- **No storage.** It writes nothing to disk and nothing to your browser storage. It has no settings to persist.
-- **No credentials.** It never reads `.env`, config files, API keys, or tokens.
-- **No transcript access.** An earlier development build read the transcript (`session.history`) to split output into prose vs tool calls; that was removed, so the shipped plugin never sees your conversation text — it sees only token *counts*.
-- **No subagent data.** Child sessions are explicitly excluded from the count (verified by the test in `smoke.mjs`).
+- **No data collection or telemetry.** Nothing is sent anywhere: no analytics, no identifier, no ping.
+- **No storage.** It writes nothing to disk and nothing to browser storage; it has no settings to persist.
+- **No credentials.** It never reads `.env`, config files, API keys or tokens.
+- **No transcript access.** Streamed text passes through the handler only to be *measured* — `text.length` is added to a counter and the text is dropped. No prompt, message body, or tool result is read, kept or shown. `session.history` is not called at all.
+- **No subagent data.** Child sessions have their own rows, and their relayed text carries the child's session id — which the plugin's strict id filter excludes by construction. `smoke.mjs` covers this.
+
+## Verify it yourself
+
+```bash
+cd desktop-plugins/session-tokens
+
+# 1) no network, storage, filesystem or process access anywhere in the file
+grep -nE "fetch\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage|ctx\.storage|process\.|require\(" plugin.js
+#    → no output
+
+# 2) every host call site, with its count
+grep -oE "host\.(onEvent\('[a-z.]+'\)|state\.[a-zA-Z]+|listPersistedSessions)" plugin.js | sort | uniq -c
+#    → 1 host.listPersistedSessions
+#    → 1 host.onEvent('message.delta'   · 1 reasoning.delta · 1 session.usage
+#    → 1 host.state.focusedSessionId    · 1 focusedSessionProfile · 1 focusedStoredSessionId
+#    (two `focusedUsage` mentions also match — both are comments saying that atom
+#     is deliberately NOT used, so another session's numbers cannot bleed in)
+
+# 3) no transcript or message-content access
+grep -cE "session\.history|\.content\b" plugin.js
+#    → 0
+
+# 4) streamed text is measured, never kept
+grep -n "text.length" plugin.js
+#    → chars.current += text.length
+```
 
 ## The honest caveat about plugins in general
 
-A Hermes desktop plugin is **not** sandboxed. It runs inside the app with the app's privileges, so a plugin *could* do any of the above if it were written to — the host only restricts which modules it may import, not what it may then call. That is exactly why the code is published uncompiled and unminified: **you don't have to trust this README, you can read the file.** Nothing is hidden and there is nothing to hide.
-
-Practical review checklist, if you'd rather verify than believe:
-
-```bash
-grep -nwE "fetch|XMLHttpRequest|WebSocket|localStorage|require" plugin.js   # expect: no output
-grep -nE "^import" plugin.js                                               # expect: 4 import lines, only react + the SDK
-grep -n "host\." plugin.js | wc -l                                         # 16 call sites, all in the table above
-```
+A Hermes desktop plugin is **not** sandboxed: it runs inside the app with the app's privileges, so a plugin *could* do any of the things above if it were written to. The host restricts which modules it may import, not what it may then call. That is exactly why this code is published uncompiled and unminified — **you don't have to trust this document, you can read the file.**
 
 ## Failures are contained, not silent
 
-The chip wraps itself in its own error boundary, so a bug inside it can only ever make the chip read `Σ — tok` — it cannot take your app's interface down. `smoke.mjs` proves this by mounting a deliberately broken copy of the plugin and asserting the app's root boundary is never reached.
+The chip wraps itself in its own error boundary, so a bug inside it can at worst make the chip read `Σ — tok` — it cannot take the app's interface down. `smoke.mjs` proves it by mounting a deliberately broken copy and asserting the app's ROOT boundary is never reached.
 
 ## Platform support
 
-macOS, Windows, and Linux — the exact platforms Hermes Desktop runs on. The plugin uses no platform-specific paths, binaries, shell commands, or Node APIs: only the SDK and standard browser APIs (`requestAnimationFrame`, `setInterval`, `Intl` number formatting). The install instructions in the README cover the Windows plugin path as well. `smoke.mjs` (the test) locates the Hermes checkout with `os.homedir()` and creates its temp directory inside it, never from a hardcoded `/tmp` path.
+macOS, Windows and Linux — the platforms Hermes Desktop runs on. No platform-specific paths, binaries, shell commands or Node APIs: only the SDK, React, and standard browser APIs (`setInterval`, `requestAnimationFrame`, `Intl` number formatting). The plugin file itself is identical on every OS; the install path differs and the README covers the Windows one.
+
+`smoke.mjs` (a development-only file, never loaded by the app) locates the Hermes checkout through `os.homedir()` and creates its temp module inside that checkout, so it works on all three platforms without hardcoded paths.
