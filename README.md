@@ -30,7 +30,7 @@ Cost                         $1.7832
 
 The three token rows **partition** the session total: `cache hit + cache miss + output` equals it exactly, so the percentages sum to 100% and no token is counted in two rows.
 
-The number moves **while the model works**: streamed reasoning and reply text are counted chunk by chunk (≈4 characters per token), and each completed API call snaps the total to the provider's reported figure.
+The number moves **while the model works**: streamed reasoning and reply text are counted chunk by chunk as they arrive, and each completed API call snaps the total to the provider's reported figure.
 
 ## Install
 
