@@ -1,10 +1,8 @@
-and 
-
 # hermes-session-monitor
 
 **v1.00** · MIT · macOS · Linux · Windows
 
-A live token, cost and cache-hit monitor for the **Hermes Desktop** status bar. It reports how many tokens the focused session has actually processed, how they break down, and what they cost — per session, restart-safe, with every figure traceable to a source.
+A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** status bar. It reports how many tokens the focused session has actually processed, how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
 ```
 Σ 197,238,947 tok · $1.78 · 99.82%            the chip, at the right end of the status bar
@@ -14,7 +12,8 @@ Click the chip for the breakdown:
 
 ```
 Session monitor
-Context             421,888 / 1,000,000 · 42%     window in use (bar below it)
+Context             421,888 / 1,000,000 · 42%     the window in use
+█████████████████░░░░░░░░░░░░░░░░░░░░░░░          fill bar = share of the window
 Cache hit                 196,470,400     prompt tokens served from the provider cache
 Cache miss                    353,194     uncached input
 Output                        415,353     everything the model generated
@@ -28,12 +27,12 @@ Cost                             $1.78
 
 | Row                      | Meaning                                                                                                                                        |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Context**        | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |
+| **Context**         | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |
 | **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                           |
 | **Cache miss**     | Uncached input tokens.                                                                                                                         |
 | **Output**         | Every token the model generated, reasoning included.                                                                                           |
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
-| **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                     |
+| **Cost**           | The cost Hermes recorded for this session — see [Cost](#cost) for how it is derived and how accurate it is.                                     |
 
 The three token rows **partition** the session total: `cache hit + cache miss + output` equals the **Total** row shown beneath them exactly, so no token is counted in two rows. The rows carry no percentages — the Total beneath them states the partition, and the cache ratio is the **Cache hit rate** figure below the rule.
 
@@ -78,6 +77,7 @@ The total is assembled from three sources, in this order:
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
+- **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those same two event payloads, so it shows `—` until the first one arrives and a `~` when the backend marks the figure as estimated.
 
 ## Cost
 
@@ -166,6 +166,7 @@ grep -n "text.length" plugin.js
 - **Main task only.** The session row does not include auxiliary work attributed to the same session (background review, title generation); that data lives in `session_model_usage` and is not reachable from the app side, so it is not shown.
 - **Cache hit includes cache writes.** A write is a miss being cached — priced above plain input, counted as a hit on the next call. It is 0 on routes without explicit caching (DeepSeek, OpenRouter), so on Anthropic this row includes a portion that was not strictly a hit.
 - **Live text is an estimate.** Streamed text is counted at ≈4 characters per token until the call's real total arrives, after which the estimate is replaced.
+- **The context window is the provider's figure.** It is the size of the prompt for the last call (plus what the backend adds), so it can read lower than the session total — the session total counts every call, the window counts what is in context right now.
 
 ## Development
 
@@ -185,4 +186,6 @@ MIT — see [LICENSE](LICENSE).
 
 
 
-Author notes: this is my first public repo that i create to solve my problem that i want to see the realtime token usage, and i think that other people might find it useful too :)
+## Why this exists
+
+This is my first public repository. I built it because I wanted to see my real-time token usage, and I figured other people might find it useful too. :)
