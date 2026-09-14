@@ -207,6 +207,7 @@ const SHARED = {
 const AGG = {
   cost: 0,
   live: new Map(), // session id -> { last: counter, tokens: counted live since the row read }
+  requests: 0, // API calls observed across sessions while this app instance has been running
   rowTotals: new Map(), // session id -> row total last seen (a written row absorbs its delta)
   sessions: 0,
   tokens: 0
@@ -227,6 +228,7 @@ function overviewSnapshot() {
     cost: AGG.cost + liveTokens * rate,
     costLive: liveTokens > 0 && rate > 0,
     liveTokens,
+    requests: AGG.requests,
     sessions: AGG.sessions,
     tokens: AGG.tokens + liveTokens
   }
@@ -458,10 +460,20 @@ function useMonitor() {
         // must keep refusing anything that is not this session's.
         const anyTotal = event.payload?.usage?.total
 
+        const anyCalls = event.payload?.usage?.calls
+
         if (typeof anyTotal === 'number' && event.session_id) {
-          const entry = AGG.live.get(event.session_id) ?? { last: anyTotal, tokens: 0 }
+          const entry = AGG.live.get(event.session_id) ?? { calls: 0, last: anyTotal, tokens: 0 }
 
           if (anyTotal > entry.last) entry.tokens += anyTotal - entry.last
+
+          // Requests are counted as they are OBSERVED: the session row carries no request total
+          // (only tool calls), and the authoritative per-session count lives in a table the
+          // renderer cannot read. Lives on the entry so it survives the token deltas.
+          if (typeof anyCalls === 'number' && anyCalls > (entry.calls ?? 0)) {
+            AGG.requests += anyCalls - (entry.calls ?? 0)
+            entry.calls = anyCalls
+          }
 
           entry.last = anyTotal
           AGG.live.set(event.session_id, entry)
@@ -919,7 +931,7 @@ function Chip() {
  */
 function OverviewPane() {
   const { overview, streamed } = useMonitor()
-  const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, sessions: 0, tokens: 0 }
+  const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, requests: 0, sessions: 0, tokens: 0 }
   // The streamed text of the session in front of you is not in any row and not yet in a tick, so
   // it is added here: without it the totals move once per completed call, and with it they climb
   // word by word like the chip does. Both totals then read as the recorded figures the moment a
@@ -931,6 +943,7 @@ function OverviewPane() {
   const estimating = o.costLive || inFlight
   const rows = [
     ['Sessions counted', fmt(o.sessions)],
+    ['Total requests', fmt(o.requests ?? 0)],
     ['Total tokens', `${estimating && inFlight ? '~' : ''}${fmt(tokensShown)}`],
     ['Total cost', costShown > 0 ? `${estimating ? '~' : ''}$${costShown.toFixed(4)}` : '—']
   ]

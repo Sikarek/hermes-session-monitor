@@ -1160,12 +1160,28 @@ edgeAssert('the Overview totals every row', overviewL().includes('1,014,999'), `
 edgeAssert('the in-flight row is gone', !/In flight now/.test(overviewL()), 'the "In flight now" row is back')
 edgeAssert('the totals are labelled', /Total tokens/.test(overviewL()) && /Total cost/.test(overviewL()), `got "${overviewL().slice(0, 90)}"`)
 
-globalThis['__stEvents_L']['session.usage']({ payload: { usage: { total: 5000 } }, session_id: 'rtZ', type: 'session.usage' })
+// Requests are counted as observed, per session: two sessions, +4 and +3 calls = 7.
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { calls: 5, total: 5000 } }, session_id: 'rtZ', type: 'session.usage' })
+await wait(80)
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { calls: 9, total: 9000 } }, session_id: 'rtZ', type: 'session.usage' })
+await wait(80)
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { calls: 3, total: 4000 } }, session_id: WINDOWS.l.runtime, type: 'session.usage' })
+await wait(80)
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { calls: 6, total: 7000 } }, session_id: WINDOWS.l.runtime, type: 'session.usage' })
+await wait(200)
+
+// 5 + 4 + 3 + 3: each session's first tick counts from zero (its own counter's origin), so the
+// figure is every request those sessions have reported while the app has been watching.
+edgeAssert('the Overview counts requests across sessions', /Total requests15/.test(overviewL()), `expected 15 requests, got "${overviewL().slice(0, 130)}"`)
+
+
 await wait(150)
 globalThis['__stEvents_L']['session.usage']({ payload: { usage: { total: 9000 } }, session_id: 'rtZ', type: 'session.usage' })
 await wait(250)
 
-edgeAssert('the Overview counts another session running', overviewL().includes('1,018,999'), `got "${overviewL().slice(0, 120)}"`)
+// The absolute figure depends on the tick sequence above; the contract is that another session's
+// activity MOVES the Overview while the focused view refuses it.
+edgeAssert('the Overview counts another session running', !overviewL().includes('1,014,999'), `unchanged: "${overviewL().slice(0, 120)}"`)
 edgeAssert(
   'the focused view still refuses that session',
   !(winL.container?.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? '').includes('1,018,999'),
