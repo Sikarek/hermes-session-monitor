@@ -1,4 +1,8 @@
+and 
+
 # hermes-session-monitor
+
+**v1.00** · MIT · macOS · Linux · Windows
 
 A live token, cost and cache-hit monitor for the **Hermes Desktop** status bar. It reports how many tokens the focused session has actually processed, how they break down, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
@@ -20,13 +24,13 @@ Cost                         $1.7832
 
 ## What it shows
 
-| Row | Meaning |
-|---|---|
-| **Cache hit** | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`). |
-| **Cache miss** | Uncached input tokens. |
-| **Output** | Every token the model generated, reasoning included. |
+| Row                      | Meaning                                                                                                                                        |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                           |
+| **Cache miss**     | Uncached input tokens.                                                                                                                         |
+| **Output**         | Every token the model generated, reasoning included.                                                                                           |
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
-| **Cost** | The cost Hermes recorded for this session — see [Cost](#cost) for how it is derived and how accurate it is. |
+| **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                     |
 
 The three token rows **partition** the session total: `cache hit + cache miss + output` equals it exactly, so the percentages sum to 100% and no token is counted in two rows.
 
@@ -50,22 +54,22 @@ No build step and no backend changes. The app watches that folder, so the chip a
 
 ## Usage
 
-| Action | Where |
-|---|---|
-| Chip | Right end of the status bar |
-| Detail panel | Click the chip |
-| Hide / show | Right-click the status bar → **Session tokens** |
-| Disable entirely | Settings → Skills → Plugins → *Session Tokens* → Desktop switch |
+| Action           | Where                                                                |
+| ---------------- | -------------------------------------------------------------------- |
+| Chip             | Right end of the status bar                                          |
+| Detail panel     | Click the chip                                                       |
+| Hide / show      | Right-click the status bar →**Session tokens**                |
+| Disable entirely | Settings → Skills → Plugins →*Session Tokens* → Desktop switch |
 
 ## How it works
 
 The total is assembled from three sources, in this order:
 
-| Term | Source | Survives a restart |
-|---|---|---|
-| Base total | `host.listPersistedSessions()` → `GET /api/profiles/sessions` → the profile's `state.db` session row | Yes — it is the stored row |
-| Completed calls | `session.usage` events, attributed strictly to this window's focused session | No (process-local), but only ever added on top of the base |
-| Live text | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream | No — superseded by the next completed call |
+| Term            | Source                                                                                                       | Survives a restart                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Base total      | `host.listPersistedSessions()` → `GET /api/profiles/sessions` → the profile's `state.db` session row | Yes — it is the stored row                                |
+| Completed calls | `session.usage` events, attributed strictly to this window's focused session                               | No (process-local), but only ever added on top of the base |
+| Live text       | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream                        | No — superseded by the next completed call                |
 
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
@@ -92,15 +96,15 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — three state atoms, three event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
 
-| Host call | Purpose |
-|---|---|
-| `host.state.focusedStoredSessionId` | Which session this window is showing |
-| `host.state.focusedSessionId` | Its runtime id |
-| `host.state.focusedSessionProfile` | Its profile |
-| `host.onEvent('session.usage')` | Completed-call token totals for that session |
-| `host.onEvent('message.delta')` | The answer's streamed text (measured, not kept) |
-| `host.onEvent('reasoning.delta')` | The reasoning's streamed text (measured, not kept) |
-| `host.listPersistedSessions()` | The focused profile's session rows — the figures displayed |
+| Host call                             | Purpose                                                     |
+| ------------------------------------- | ----------------------------------------------------------- |
+| `host.state.focusedStoredSessionId` | Which session this window is showing                        |
+| `host.state.focusedSessionId`       | Its runtime id                                              |
+| `host.state.focusedSessionProfile`  | Its profile                                                 |
+| `host.onEvent('session.usage')`     | Completed-call token totals for that session                |
+| `host.onEvent('message.delta')`     | The answer's streamed text (measured, not kept)             |
+| `host.onEvent('reasoning.delta')`   | The reasoning's streamed text (measured, not kept)          |
+| `host.listPersistedSessions()`      | The focused profile's session rows — the figures displayed |
 
 **It does not:**
 
@@ -173,3 +177,7 @@ It stubs the plugin SDK, mounts the chip against a real React root inside an err
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+
+
+Author notes: this is my first public repo that i create to solve my problem that i want to see the realtime token usage, and i think that other people might find it useful too :)

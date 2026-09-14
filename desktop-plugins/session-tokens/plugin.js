@@ -511,6 +511,7 @@ class ChipGuard extends Component {
 export default {
   id: ID,
   name: 'Session Tokens',
+  description: 'Live per-session tokens, cost and cache-hit rate for the current session',
   register(ctx) {
     debug('loaded', { at: new Date().toISOString() })
     // `data` (not `render`) so the bar's own right-click menu can list it: an item
