@@ -71,7 +71,7 @@ The total is assembled from three sources, in this order:
 | Term            | Source                                                                                                       | Survives a restart                                         |
 | --------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
 | Base total      | `host.listPersistedSessions()` → `GET /api/profiles/sessions` → the profile's `state.db` session row | Yes — it is the stored row                                |
-| Completed calls | `session.usage` events, attributed strictly to this window's focused session                               | No (process-local), but only ever added on top of the base |
+| Completed calls | `session.usage` events, attributed strictly to this window's focused session. The payload is that process's cumulative counter, so the first tick of a plugin lifetime is a **baseline** and growth is counted from it | No (process-local), but only ever added on top of the base |
 | Live text       | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream                        | No — superseded by the next completed call                |
 
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
@@ -79,6 +79,7 @@ The total is assembled from three sources, in this order:
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
 - **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those two event payloads, and — when nothing has been pushed yet — from an on-demand `session.context_breakdown` read addressed to this window's session id, so a panel opened on an idle session is never blank. The backend rejects the read for a runtime id it no longer holds (a detached or reaped session), so it is retried briefly and then re-asked by the poll and on every session change, instead of being fired once and forgotten. A `~` marks the figure the backend calls estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
+- **The counter's baseline** — `session.usage` carries the agent *process's* cumulative counter for the session, while the stored row accumulates across processes, so the row already contains most of that counter. The first tick a plugin lifetime sees is therefore taken as a baseline (claiming it as growth would inflate the chip by everything the process had written), and a clearly regressed counter — an agent restart — rebases the same way instead of freezing. After a reload the chip therefore starts from your stored total and grows from there.
 - **Reads never disturb the live term** — the anchor the live counter is measured against only advances when the *stored row* does, i.e. when a turn ends and is written. Reading the row (the 15-second poll, or the refresh button) therefore leaves the growth already counted in place; refreshing mid-turn cannot stall the counter.
 - **Resumed sessions re-attach on their own** — a resumed session runs under a new runtime id; its own `session.info` (which carries the stored id, so it is proof rather than a guess) teaches the chip that id, and the live ticks are attributed again. Without that step the counter would freeze until the window's own state refreshed.
 
@@ -206,11 +207,14 @@ boundary, and fails on render *and* effect-time errors (`node --check` cannot se
 an undefined identifier, and an uncontained throw reaches the app's root boundary,
 which blanks the window).
 
-Behaviour — a streamed chunk moves the total by exactly `chars ÷ 4`; a completed
-call is adopted; the context row paints from an attributed payload and its bar
-matches the reported percent; the refresh button performs a fresh read; the
-labels/figures contrast rule and the percentage-free rows hold; the popover width
-contract holds.
+Behaviour — a streamed chunk moves the total by exactly `chars ÷ 4`; the first tick
+is taken as a baseline and growth after it is counted; a manual refresh does not move
+the displayed total and counting continues afterwards; a row advance neither
+double-counts nor drops tokens and counting resumes from the new anchor; a process
+cumulative does not inflate the total; the context row paints from an attributed
+payload, its bar matches the reported percent, a refresh re-pulls it, and a rejected
+pull is retried; the refresh button performs a fresh read; the labels/figures contrast
+rule and the percentage-free rows hold; the popover width contract holds.
 
 Isolation — two simulated windows keep separate totals; a foreign session's tick,
 context payload or text is refused; a tick from a resumed runtime id IS adopted

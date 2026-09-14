@@ -136,13 +136,24 @@ below are the release-level summary.
 
 - **Static check** — the app's TypeScript over the plugin catches undeclared names
   and use-before-declaration, the two classes that shipped bugs during development.
-- **Mount test** — behaviour, isolation and edge-case contracts, mutation-checked
-  so each one fails when the bug it describes is reintroduced. Edge cases covered:
-  a draft with no session, a failing or missing stored-row read, an older SDK without
-  `Button`/`icons`, a provider that bills cache writes, garbage payloads (null /
-  missing / non-numeric / negative / enormous), a session switch inside one window, a
-  resumed runtime id, a model switch, and failure containment for a deliberately
-  broken copy.
+- **Mount test** — behaviour, isolation and edge-case contracts on dedicated fixture
+  windows (one per situation), each mutation-checked so it fails when the bug it
+  describes is reintroduced. Accounting is covered by the case where a plugin mounts
+  mid-session with a process cumulative far above the row — the total must not inflate,
+  growth from the baseline must be counted, a refresh must not move it, and a row
+  advance must neither double-count nor drop.
+- **Edge cases covered**: a draft with no session, a failing stored-row read, a build
+  without `host.listPersistedSessions`, an older SDK without `Button`/`icons`, a
+  provider that bills cache writes, garbage payloads (null / missing / non-numeric /
+  negative / 10¹⁵), a session switch inside one window, a resumed runtime id arriving
+  late, a model switch, a context pull rejected because the gateway no longer holds
+  the session (retry, then a re-pull on the session change — asserted to carry the new
+  id), and failure containment for a deliberately broken copy.
+- **Mutation checks** — reintroducing each of these makes the suite fail by name: an
+  undefined identifier, a use-before-declaration, a removed numeric guard, dropped cache
+  writes, a missing refresh button, a missing event subscription, a model switch that
+  leaves the old window on screen, a removed SDK fallback, an anchor that moves on every
+  read, a removed baseline, a removed pull retry, and both session-change re-pull paths.
 
 ### Security
 
