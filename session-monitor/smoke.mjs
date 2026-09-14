@@ -72,6 +72,8 @@ const stubFor = w => {
   const ADD_ROW_EXTRA = JSON.stringify(`__stAddRowExtra_${w.key}`)
   const BREAKDOWN = JSON.stringify(`__stBreakdown_${w.key}`)
   const BREAKDOWN_CALLS = JSON.stringify(`__stBreakdownCalls_${w.key}`)
+  const BREAKDOWN_PARAMS = JSON.stringify(`__stBreakdownParams_${w.key}`)
+  const BREAKDOWN_FAIL = JSON.stringify(`__stBreakdownFail_${w.key}`)
   const READ_THROWS = w.readThrows ? 'true' : 'false'
   const LIST_READ = w.noRowMethod
     ? 'listPersistedSessions: undefined,'
@@ -135,6 +137,11 @@ export const host = {
   request: async (method, params) => {
     if (method === 'session.context_breakdown') {
       globalThis[${BREAKDOWN_CALLS}] = (globalThis[${BREAKDOWN_CALLS}] ?? 0) + 1
+      globalThis[${BREAKDOWN_PARAMS}] = params
+
+      // The backend rejects a runtime id it no longer holds (a detached or reaped
+      // session); a test flips this to reproduce that.
+      if (globalThis[${BREAKDOWN_FAIL}]) throw new Error('gateway: session not in memory')
 
       // A backend with nothing measured yet answers zeros; the test windows that
       // want a painted row set their own breakdown object.
@@ -212,7 +219,8 @@ const WINDOWS = {
   g: { cacheRead: 1000, key: 'G', noButton: true, runtime: 'rtG', stored: 'storedG' }, // older SDK: no Button/icons
   h: { cacheRead: 10000, key: 'H', runtime: 'rtH', stored: 'storedH' }, // refresh/anchor accounting
   i: { cacheRead: 5000, key: 'I', runtime: 'rtI', stored: 'storedI' }, // context pull: no push payloads
-  j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' } // a plugin mounted mid-session
+  j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' }, // a plugin mounted mid-session
+  k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' } // pull retry + session change
 }
 
 const stubPathFor = window => {
@@ -905,6 +913,35 @@ await wait(400)
 const panelIRefreshed = [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
 
 edgeAssert('a refresh re-pulls the window', panelIRefreshed.includes('512,000 / 1,000,000 · 51%'), `got "${panelIRefreshed.slice(0, 90)}"`)
+
+// K — A BLANK ROW THAT PERSISTS (the second report): the backend rejects a runtime id
+// it no longer holds in memory, so a single fired-and-forgotten pull left the row blank
+// through refreshes and tab switches. A rejected pull must be retried, and a session
+// switch must re-ask for the new session instead of keeping the previous answer.
+//
+// NOTE two independent paths re-pull on a session change: an effect keyed on the
+// window's ids, and the turn-end effect (its `load` identity changes with the session).
+// Verified by removing both: this contract then fails with `asked for {"session_id":"rtK"}`.
+// Keep at least one.
+globalThis.__stBreakdownFail_K = true // the session is detached right now
+globalThis.__stBreakdown_K = { categories: [], context_estimated: false, context_max: 500000, context_percent: 12, context_used: 60000 }
+
+const winK = await mount(toModule(code, 'plugin-winK.mjs', stubPathFor(WINDOWS.k)))
+const panelK = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
+
+edgeAssert('a rejected pull leaves "—", not a wrong number', /Context—/.test(panelK()), `got "${panelK().slice(0, 80)}"`)
+
+globalThis.__stBreakdownFail_K = false // the session comes back to life
+await wait(2400) // the single retry has fired by now
+
+edgeAssert('a rejected pull is retried', panelK().includes('60,000 / 500,000 · 12%'), `got "${panelK().slice(0, 90)}"`)
+
+globalThis.__stBreakdown_K = { categories: [], context_estimated: false, context_max: 1000000, context_percent: 77, context_used: 770000 }
+globalThis.__stSetSession_K?.('storedK2', 'rtK2')
+await wait(600)
+
+edgeAssert('a session switch re-pulls the window', panelK().includes('770,000 / 1,000,000 · 77%'), `got "${panelK().slice(0, 90)}"`)
+edgeAssert('the re-pull asked for the NEW session id', globalThis.__stBreakdownParams_K?.session_id === 'rtK2', `asked for ${JSON.stringify(globalThis.__stBreakdownParams_K)}`)
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {

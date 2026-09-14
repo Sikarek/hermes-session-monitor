@@ -284,7 +284,7 @@ function Chip() {
   // a read-only chars/4 pass, no provider call, no cache impact) — and it is
   // addressed to THIS window's session id, so the answer cannot be another session's.
   const pullContext = useCallback(
-    async ({ force = false } = {}) => {
+    async ({ force = false, retry = false } = {}) => {
       if (!force && ctxRef.current !== null) return // pushed (measured) data beats an estimate
       if (typeof host.request !== 'function') return
       if (!runtimeId) return // a draft has no session to ask about
@@ -294,8 +294,12 @@ function Chip() {
 
         takeContext(breakdown)
       } catch {
-        // Older backend without the method (or a gateway hiccup): the push payloads
-        // remain the source, and the row stays — rather than inventing a number.
+        // The backend rejects a runtime id it no longer holds in memory (a detached or
+        // reaped session) and answers nothing until the session is live again, so the
+        // pull has to be retried rather than fired once. One quick retry covers a
+        // resume in progress; the poll keeps trying afterwards. The row stays "—"
+        // meanwhile instead of inventing a number.
+        if (!retry) setTimeout(() => void pullContext({ force: true, retry: true }), 1500)
       }
     },
     [runtimeId, takeContext]
@@ -461,13 +465,25 @@ function Chip() {
     void pullContext({ force: true })
   }, [model, refresh])
 
+  // A session switch — or a resume, where the runtime id arrives just after the
+  // switch — must re-ask, otherwise a panel showing the new session keeps the previous
+  // session's "—". The pull is skipped when a push payload already painted the row.
+  useEffect(() => {
+    if (!runtimeId) return
+
+    void pullContext()
+  }, [pullContext, runtimeId, storedId])
+
   // Turn end is when the row is written — pick it up, and stop polling while working.
   useEffect(() => {
     chars.current = 0
     void load()
     void pullContext()
 
-    const timer = setInterval(() => void load(), POLL_MS)
+    const timer = setInterval(() => {
+      void load()
+      void pullContext() // no-op unless the window is still unknown
+    }, POLL_MS)
 
     return () => clearInterval(timer)
   }, [load])

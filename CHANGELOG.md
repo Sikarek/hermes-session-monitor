@@ -67,6 +67,12 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 - **An idle window could inherit a busy session's numbers** — strict per-window
   attribution (runtime id or stored id only) replaced the fused
   `host.state.focusedUsage` atom and the "accept unknown ids while busy" fallback.
+- **The blank context row could persist through refreshes and tab switches** — the
+  backend rejects `session.context_breakdown` for a runtime id it no longer holds in
+  memory (a detached or reaped session), and the pull was fired once and forgotten, so a
+  rejection left the row `—` until the next turn. The pull is now retried briefly, re-asked
+  by the poll while the window is still unknown, and re-asked whenever the window's
+  session changes (including a resume whose runtime id arrives after the switch).
 - **The context row could stay blank** — it only painted from payloads pushed during a
   turn, so a panel opened on an idle session (or right after the plugin reloaded) showed
   `—` until the next call, and refreshing could not help because the stored row carries
