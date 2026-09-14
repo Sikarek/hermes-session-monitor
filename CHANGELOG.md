@@ -142,6 +142,14 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ## [Unreleased]
 
+### Changed
+
+- **The degraded-state note is gone.** A session with no stored row yet (a brand-new chat) used to
+  show `live only — no stored row for this session` above the rows. It said nothing the figures did
+  not, and it appeared on every new session. The readiness gate that note accompanied is untouched:
+  the digits are still held back until a row resolves, so the note's removal cannot paint a wrong
+  figure.
+
 ### Added
 
 - **A live cost estimate** — the recorded cost only moves when the session row is written (turn end)

@@ -174,7 +174,7 @@ grep -n "text.length" plugin.js
 ## Compatibility
 
 - **macOS, Linux, Windows** — plain ESM using only the plugin SDK, React and standard web APIs (`setInterval`, `requestAnimationFrame`, `Intl` number formatting). No Node APIs, no shell commands, no OS-specific paths or calls; the plugin file is identical on every platform, only the install path differs.
-- **Hermes Desktop** — any build providing the status-bar contribution area and `host.listPersistedSessions`. On an older backend without the session read, the chip degrades to the live counters and reports `live only — no stored row for this session` rather than inventing a total.
+- **Hermes Desktop** — any build providing the status-bar contribution area and `host.listPersistedSessions`. On an older backend without the session read, the chip falls back to the live counters rather than inventing a total, and says nothing about it — the readiness gate still holds the digits until a row resolves, so no wrong figure is ever painted.
 - **Remote gateways** — the plugin root is resolved locally, so the chip still loads when the window is connected to a remote or cloud gateway.
 
 ## Known limitations

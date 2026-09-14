@@ -913,7 +913,9 @@ const edgeAssert = (name, ok, detail = '') => {
 const winC = await mount(toModule(code, 'plugin-winC.mjs', stubPathFor(WINDOWS.c)))
 
 edgeAssert('draft window mounts clean', winC.failures.length === 0 && !winC.boundaryCaught, winC.failures[0] ?? 'boundary hit')
-edgeAssert('draft window degrades visibly', /no stored row/.test(winC.container?.textContent ?? ''), (winC.container?.textContent ?? '').slice(0, 70))
+// No "live only" note any more: a draft shows the placeholder and then its own figures, without a
+// line of prose about the backend's state.
+edgeAssert('draft window shows no degraded note', !/live only|no stored row/i.test(winC.container?.textContent ?? ''), (winC.container?.textContent ?? '').slice(0, 70))
 
 // D — the session read throws (backend hiccup): the chip must keep counting live.
 const winD = await mount(toModule(code, 'plugin-winD.mjs', stubPathFor(WINDOWS.d)))
@@ -928,7 +930,7 @@ edgeAssert('failing read keeps live counting', /100/.test(winD.container?.textCo
 const winE = await mount(toModule(code, 'plugin-winE.mjs', stubPathFor(WINDOWS.e)))
 
 edgeAssert('missing read method mounts clean', winE.failures.length === 0 && !winE.boundaryCaught, winE.failures[0] ?? 'boundary hit')
-edgeAssert('missing read method degrades visibly', /live only/.test(winE.container?.textContent ?? ''), (winE.container?.textContent ?? '').slice(0, 70))
+edgeAssert('missing read method shows no degraded note', !/live only|no stored row/i.test(winE.container?.textContent ?? ''), (winE.container?.textContent ?? '').slice(0, 70))
 
 // F — a provider that writes cache: Cache hit must be read + write, not read alone.
 // The panel is looked up as the LAST one in the DOM (mount order), not by a loose

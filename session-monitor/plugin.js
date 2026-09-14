@@ -905,15 +905,6 @@ function TokenPanel({ stats }) {
           'refresh'
         )
       ]}),
-      // Provenance appears ONLY in the degraded case. The ordinary
-      // "N messages · this session's record" line was removed on request, but a
-      // figure computed from live counters alone must still say so.
-      rowState === 'unavailable'
-        ? jsx('p', {
-            className: 'text-[0.6875rem] text-muted-foreground',
-            children: 'live only — no stored row for this session'
-          })
-        : null,
       // Three peers that PARTITION the session total — the rows add up to the
       // Total line beneath them:
       //   cache hits (reads + writes) + cache misses (uncached input) + output
