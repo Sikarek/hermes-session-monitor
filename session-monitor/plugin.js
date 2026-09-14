@@ -312,14 +312,24 @@ function useMonitor() {
   // info by its stored id — so what lands here is always THIS session's window.
   // Declared ABOVE the events effect: that effect's dependency array is evaluated
   // during render, so a later `const` would sit in its temporal dead zone.
-  const takeContext = useCallback(usage => {
+  const takeContext = useCallback((usage, forRuntime) => {
     if (!usage) return
 
     const used = n(usage.context_used)
     const max = n(usage.context_max)
 
     if (used > 0 || max > 0) {
-      const next = { estimated: Boolean(usage.context_estimated), max, percent: n(usage.context_percent), used }
+      // STAMPED with the session it was measured for: a context figure carries no identity of its
+      // own, so an unstamped one could be measured for one session and displayed under another —
+      // the "same context across every session" report. Views render it only while the stamp
+      // matches the chat on screen.
+      const next = {
+        estimated: Boolean(usage.context_estimated),
+        forRuntime: forRuntime ?? null,
+        max,
+        percent: n(usage.context_percent),
+        used
+      }
 
       ctxRef.current = next
       setCtx(next)
@@ -393,7 +403,7 @@ function useMonitor() {
         const usage = event.payload?.usage
         const total = usage?.total
 
-        takeContext(usage)
+        takeContext(usage, event.session_id)
 
         if (
           typeof total === 'number' &&
@@ -414,7 +424,7 @@ function useMonitor() {
           aliasRef.current = event.session_id
         }
 
-        takeContext(event.payload?.usage)
+        takeContext(event.payload?.usage, event.session_id)
       }),
       // The two CONTENT streams: `message.delta` is the answer, `reasoning.delta`
       // is the model thinking — those are the words that cost output tokens.
@@ -459,7 +469,7 @@ function useMonitor() {
         // Only the newest pull for the session still on screen may paint.
         if (seq !== pullSeq.current || runtimeRef.current !== wantRuntime) return
 
-        takeContext(breakdown)
+        takeContext(breakdown, wantRuntime)
       } catch {
         // The backend rejects a runtime id it no longer holds in memory (a detached or
         // reaped session) and answers nothing until the session is live again, so the
@@ -702,6 +712,7 @@ function useMonitor() {
   return {
     base,
     chipTotal,
+    statsRuntime: runtimeId,
     ctx,
     grown,
     onPull: pullContext,
@@ -786,7 +797,11 @@ function MonitorPane() {
  */
 function TokenPanel({ stats }) {
 
-  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, streamed, subagentCost, subagents, subagentTokens, total } = stats
+  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, statsRuntime, streamed, subagentCost, subagents, subagentTokens, total } = stats
+  // Show a window only while its stamp matches the chat on screen; otherwise the row reads "—"
+  // until THIS session reports its own — which is what keeps one session's window from appearing
+  // under another session's name.
+  const shownCtx = ctx && (ctx.forRuntime ?? null) === (statsRuntime ?? null) ? ctx : null
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   // The popover mounts on open (Radix), so this is "the user looked at the panel":
@@ -875,8 +890,8 @@ function TokenPanel({ stats }) {
           jsx('span', { className: 'truncate text-muted-foreground', children: 'Context' }),
           jsx('span', {
             className: 'tabular-nums text-foreground',
-            children: ctx
-              ? `${ctx.estimated ? '~' : ''}${fmt(ctx.used)}${ctx.max > 0 ? ` / ${fmt(ctx.max)} · ${Math.round(ctx.percent)}%` : ''}`
+            children: shownCtx
+              ? `${shownCtx.estimated ? '~' : ''}${fmt(shownCtx.used)}${shownCtx.max > 0 ? ` / ${fmt(shownCtx.max)} · ${Math.round(shownCtx.percent)}%` : ''}`
               : '—'
           })
         ]}),
@@ -885,16 +900,16 @@ function TokenPanel({ stats }) {
           'data-slot': 'session-monitor-context-bar',
           className: cn(
             'flex h-1.5 overflow-hidden rounded-full',
-            ctx ? 'bg-(--ui-stroke-tertiary)' : 'dither bg-(--ui-bg-elevated)'
+            shownCtx ? 'bg-(--ui-stroke-tertiary)' : 'dither bg-(--ui-bg-elevated)'
           ),
           // Children stay INSIDE props: in the automatic runtime the third argument
           // of jsx/jsxs is the KEY, so passing an element there silently renders an
           // empty element (this bug shipped for one test run: the bar had no fill).
-          children: ctx
+          children: shownCtx
             ? jsx('span', {
                 key: 'context-fill',
                 className: 'h-full min-w-px rounded-full bg-(--ui-text-tertiary)',
-                style: { width: `${Math.max(0, Math.min(100, ctx.percent))}%` }
+                style: { width: `${Math.max(0, Math.min(100, shownCtx.percent))}%` }
               })
             : null
         })

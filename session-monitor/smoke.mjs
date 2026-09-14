@@ -275,6 +275,7 @@ const WINDOWS = {
   m: { cacheRead: 2000, key: 'M', runtime: 'rtM', stored: 'storedM' }, // pane without the chip
   n: { cacheRead: 4000, key: 'N', runtime: 'rtN', stored: 'storedN' }, // out-of-order reads
   o: { cacheRead: 7000, key: 'O', runtime: 'rtO', stored: 'storedO' }, // focus vs active chat
+  p: { cacheRead: 3000, key: 'P', runtime: 'rtP', stored: 'storedP' }, // the context figure's session stamp
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -1216,6 +1217,33 @@ edgeAssert(
   chipO() !== beforeOverflow,
   'the current session stopped counting'
 )
+
+// P — A CONTEXT FIGURE BELONGS TO A SESSION (the reported symptom): the window is the one value
+// with no identity of its own, so it is stamped with the session it was measured for and shown
+// only while that stamp matches the chat on screen. A payload carrying this session's STORED id
+// but an older runtime id — a resume, or a relayed push — must not paint the current chat's row.
+const winP = await mount(toModule(code, 'plugin-winP.mjs', stubPathFor(WINDOWS.p)))
+const panelP = () => winP.container?.querySelector('[data-slot="session-monitor-panel"]')?.textContent ?? ''
+
+await wait(300)
+
+globalThis['__stEvents_P']['session.info']({
+  payload: { stored_session_id: WINDOWS.p.stored, usage: { context_max: 500000, context_percent: 22, context_used: 111111 } },
+  session_id: 'rtP-other',
+  type: 'session.info'
+})
+await wait(250)
+
+edgeAssert('a figure stamped for another runtime does not paint', !panelP().includes('111,111'), `leaked a stale window: "${panelP().slice(0, 90)}"`)
+
+globalThis['__stEvents_P']['session.info']({
+  payload: { stored_session_id: WINDOWS.p.stored, usage: { context_max: 500000, context_percent: 44, context_used: 222222 } },
+  session_id: WINDOWS.p.runtime,
+  type: 'session.info'
+})
+await wait(250)
+
+edgeAssert('the figure for the current runtime paints', panelP().includes('222,222'), `got "${panelP().slice(0, 90)}"`)
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
