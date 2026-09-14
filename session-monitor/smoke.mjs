@@ -1187,6 +1187,36 @@ edgeAssert(
   `expected the active chat to stay — got "${chipO().trim().slice(0, 60)}"`
 )
 
+// O — ISOLATION ACROSS A SWITCH (the reported overflow): once the chat changes, the previous
+// session's events must not move the new one's figures. Window O switched to storedO2 above.
+globalThis.__stSetSession_O?.('storedO2', 'rtO2')
+await wait(400)
+
+const beforeOverflow = chipO()
+
+// The session that was on screen a moment ago keeps streaming: its tick and its words must be
+// refused by the new session's view.
+globalThis['__stEvents_O']['session.usage']({ payload: { usage: { total: 40000 } }, session_id: WINDOWS.o.runtime, type: 'session.usage' })
+globalThis['__stEvents_O']['message.delta']({ payload: { text: 'x'.repeat(4000) }, session_id: WINDOWS.o.runtime, type: 'message.delta' })
+await wait(350)
+
+edgeAssert(
+  'the previous session cannot move the current one',
+  chipO() === beforeOverflow,
+  `the counter took another session's events: "${beforeOverflow.trim().slice(0, 40)}" → "${chipO().trim().slice(0, 40)}"`
+)
+
+// ...while the session actually on screen still counts.
+globalThis['__stEvents_O']['session.usage']({ payload: { usage: { total: 5000 } }, session_id: 'rtO2', type: 'session.usage' })
+globalThis['__stEvents_O']['session.usage']({ payload: { usage: { total: 9000 } }, session_id: 'rtO2', type: 'session.usage' })
+await wait(350)
+
+edgeAssert(
+  'the session on screen still counts',
+  chipO() !== beforeOverflow,
+  'the current session stopped counting'
+)
+
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
   globalThis['__stEvents_A']['session.usage']({ payload, session_id: WINDOWS.a.runtime, type: 'session.usage' })

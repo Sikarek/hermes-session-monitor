@@ -229,6 +229,12 @@ function useMonitor() {
   const activeRuntimeId = typeof host.state.activeSessionId !== 'undefined' ? useValue(host.state.activeSessionId) : null
   const runtimeId = activeRuntimeId ?? focusedRuntimeId
   const storedId = focusedStoredId
+  // The identity every term is attributed to, and the key the per-session reset is tied to: if
+  // EITHER half changes, the figures on screen belong to the previous session. Keying on one half
+  // (the focused stored id, or the active runtime id alone) left a window where the previous
+  // session's live counters were still displayed — and, before this, where an id resolved for
+  // another session could remain in the ownership filter.
+  const identityKey = `${runtimeId ?? ''}|${storedId ?? ''}`
   const profile = useValue(host.state.focusedSessionProfile)
   // The model decides the context WINDOW, so a switch has to invalidate it.
   const model = useValue(host.state.model)
@@ -340,6 +346,9 @@ function useMonitor() {
     // session's chip count this session's tokens. Verified live: the focused
     // runtime id DOES match its own usage/reasoning events (focusedRuntime
     // "0734c261" == sid "0734c261").
+    // Ownership is decided by the atoms' CURRENT values (runtimeRef/storedRef, rewritten every
+    // render) plus the runtime id learned from this session's own session.info. Nothing else is
+    // ever adopted, so a session cannot inherit another's stream.
     const forFocused = id =>
       Boolean(id) && (id === runtimeRef.current || id === storedRef.current || id === aliasRef.current)
 
@@ -521,8 +530,6 @@ function useMonitor() {
       )
       const effectiveStored = row?.id ?? wantStored
 
-      if (row?.id && row.id !== wantStored) storedRef.current = row.id
-
       setSubagents(row ? descendantsOf(page, effectiveStored) : null)
 
       if (row) {
@@ -615,7 +622,7 @@ function useMonitor() {
     setSubagents(null)
     setRowState('pending')
     void load()
-  }, [load, runtimeId])
+  }, [identityKey, load])
 
   // The context window belongs to the model: on a switch the old limit must not
   // linger, so clear it (the row shows — for a moment) and re-read. The next usage
