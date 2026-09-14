@@ -594,7 +594,12 @@ function useMonitor() {
   }, [load, pullContext])
 
 
-  // Session switch: every term belongs to the previous session.
+  // New session: every term belongs to the previous one. Keyed on the ACTIVE chat's runtime id
+  // as well as `load`'s identity, because `load` is derived from the FOCUSED stored id — and the
+  // two differ exactly when focus moves without changing the chat, or when the chat changes while
+  // a tile is focused. Keyed on `load` alone, an active-chat change left the previous session's
+  // context figure and high-water mark in place: the same context across sessions, and a total
+  // pinned at the other session's value.
   useEffect(() => {
     live.current = 0
     liveAnchor.current = 0
@@ -602,7 +607,6 @@ function useMonitor() {
     chunks.current = 0
     best.current = 0
     aliasRef.current = null
-    liveAnchor.current = 0
     rowTotalRef.current = 0
     tickSeen.current = false
     ctxRef.current = null
@@ -610,22 +614,6 @@ function useMonitor() {
     setCtx(null)
     setSubagents(null)
     setRowState('pending')
-    void load()
-  }, [load])
-
-  // Same chat, new runtime session (resume after a backend restart): the agent's
-  // counters restart at zero, so `total > live.current` would reject every new tick
-  // and the live term would freeze. Re-anchor.
-  useEffect(() => {
-    live.current = 0
-    liveAnchor.current = 0
-    rowTotalRef.current = 0
-    tickSeen.current = false
-    chars.current = 0
-    aliasRef.current = null
-    ctxRef.current = null
-    setCtx(null)
-    setSubagents(null)
     void load()
   }, [load, runtimeId])
 

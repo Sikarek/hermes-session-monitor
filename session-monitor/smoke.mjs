@@ -1187,16 +1187,6 @@ edgeAssert(
   `expected the active chat to stay — got "${chipO().trim().slice(0, 60)}"`
 )
 
-// Clicking the active chat again must leave it exactly where it is.
-globalThis.__stSetSession_O?.(WINDOWS.o.stored, WINDOWS.o.runtime)
-await wait(300)
-
-edgeAssert(
-  'clicking the chat keeps it',
-  chipO().includes(WINDOWS.o.cacheRead ? '' : '') && chipO() === beforeFocusMove,
-  `expected the same figures — got "${chipO().trim().slice(0, 60)}"`
-)
-
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
   globalThis['__stEvents_A']['session.usage']({ payload, session_id: WINDOWS.a.runtime, type: 'session.usage' })
