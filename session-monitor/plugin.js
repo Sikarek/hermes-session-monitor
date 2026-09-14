@@ -362,9 +362,8 @@ function Chip() {
       jsx(PopoverContent, {
         align: 'end',
         // w-auto, NOT a pinned width: the popover variant ships `w-72` (288px) while
-        // the panel is `w-80` (320px) — pinning the popover clipped the longest
-        // figures. `cn` is tailwind-merge, so this overrides the variant's width and
-        // lets the panel set it.
+        // the panel sets its own — pinning the popover clipped the longest figures.
+        // `cn` is tailwind-merge, so this overrides the variant's width.
         className: 'w-auto border-(--ui-stroke-secondary) p-0',
         side: 'top',
         sideOffset: 6,
@@ -402,7 +401,9 @@ function TokenPanel({ stats }) {
 
   return jsxs('div', {
     'data-slot': 'session-monitor-panel',
-    className: 'flex w-80 flex-col gap-3 p-3 text-[0.75rem]',
+    // w-64 (256px): the widest row is a label plus an 11-digit figure ≈ 195px, so
+    // 320px left a third of the box empty once the percentage column went away.
+    className: 'flex w-64 flex-col gap-3 p-3 text-[0.75rem]',
     children: [
       jsx('p', { className: 'font-medium text-foreground', children: 'Session monitor' }),
       // Provenance appears ONLY in the degraded case. The ordinary

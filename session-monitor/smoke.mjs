@@ -408,7 +408,7 @@ if (!live.failures.length) {
       throw new Error(`popover pins a width ("${popoverEl.className}") — that clips the panel`)
     }
 
-    if (!/w-80/.test(panelEl.className)) {
+    if (!/w-64/.test(panelEl.className)) {
       throw new Error(`panel width class missing ("${panelEl.className}")`)
     }
 
