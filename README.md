@@ -26,7 +26,7 @@ Cost                         $1.7832
 | **Cache miss** | Uncached input tokens. |
 | **Output** | Every token the model generated, reasoning included. |
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
-| **Cost** | The cost Hermes recorded for this session — an estimate from published rates, not a provider invoice (see [Cost](#cost)). |
+| **Cost** | The cost Hermes recorded for this session — see [Cost](#cost) for how it is derived and how accurate it is. |
 
 The three token rows **partition** the session total: `cache hit + cache miss + output` equals it exactly, so the percentages sum to 100% and no token is counted in two rows.
 
