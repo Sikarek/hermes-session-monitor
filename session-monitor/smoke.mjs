@@ -988,6 +988,13 @@ edgeAssert(
 tickH(15000)
 await wait(250)
 
+{
+  const chipH = Number(((winH.container?.textContent ?? '').match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+  const paneH = Number((([...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? '').match(/Total~?([\d,]+)/)?.[1] ?? '0').replaceAll(',', ''))
+
+  edgeAssert('the chip and the pane agree after a row advance', chipH === paneH, `chip ${chipH.toLocaleString('en-US')} vs pane ${paneH.toLocaleString('en-US')}`)
+}
+
 edgeAssert(
   'counting resumes from the new anchor',
   chipH() === rowH + 10000,
@@ -1119,19 +1126,31 @@ const ROW = (input, cost) => [{ cache_read_tokens: 0, cache_write_tokens: 0, est
 // Call 1 is the mount's own read (immediate); call 2 is the first refresh — SLOW, and
 // carrying a stale, much larger figure; call 3 is the second refresh, immediate. The stale
 // response therefore lands LAST, which is the out-of-order case that used to win.
-globalThis.__stReadRows_N = [ROW(5500, 1.3718), ROW(999999, 9.99), ROW(222, 0.02)]
-globalThis.__stReadDelays_N = [0, 600, 0]
-
 const winN = await mount(toModule(code, 'plugin-winN.mjs', stubPathFor(WINDOWS.n)))
 const chipN = () => winN.container?.textContent ?? ''
-const panelN = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)
+// Scoped to THIS window: the chip's popover panel comes first in the DOM, the pane's second.
+// (A document-wide lookup in a harness with a dozen mounts can hit another window entirely.)
+const panelsN = () => [...(winN.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])]
+const panePanelN = () => panelsN().at(-1)
+const chipPanelN = () => panelsN()[0]
 const refreshN = () => panelN()?.querySelector('button')?.click()
 
-await wait(300) // the mount's own read settles
-refreshN() // read 2: in flight, slow, stale
+await wait(400) // both views' mount reads settle (each view reads on mount)
+
+// Fixture for the two clicks only: every view reads on mount, so indexing by call number
+// before that would land on the wrong read. Call 1 = the stale, slow response; call 2 = the
+// fresh one — the stale response therefore arrives LAST.
+globalThis.__stReadCalls_N = 0
+globalThis.__stReadRows_N = [ROW(999999, 9.99), ROW(222, 0.02)]
+globalThis.__stReadDelays_N = [600, 0]
+
+// Two views, one read each: the pane's button issues the slow, stale read, the chip's
+// popover button the fresh one. This is the real shape of the race — a read from one view
+// racing a read from the other — and the guard has to be shared to catch it.
+panePanelN()?.querySelector('button')?.click() // read 1: the pane's own instance, slow, stale
 await wait(120)
-refreshN() // read 3: issued later, resolves immediately
-await wait(900) // ...and read 2 arrives after it
+chipPanelN()?.querySelector('button')?.click() // read 2: the chip's instance, immediate, fresh
+await wait(900) // ...and read 1 arrives after it
 
 edgeAssert(
   'a stale response is dropped',

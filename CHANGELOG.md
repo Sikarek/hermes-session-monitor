@@ -90,6 +90,13 @@ Built and iterated on 2026-09-14. Never tagged, never published.
   rejection left the row `—` until the next turn. The pull is now retried briefly, re-asked
   by the poll while the window is still unknown, and re-asked whenever the window's
   session changes (including a resume whose runtime id arrives after the switch).
+- **Opening the sidebar pane could show different figures than the chip** — each view kept its
+  own accumulators (live counters, anchor, high-water mark, streamed characters) and its own
+  display values, so a view that had just mounted started from an empty history: the pane
+  recomputed the session's numbers without the live counts the chip had been accumulating since
+  the app started, and a per-view request guard let a stale read from one view write into the
+  other's figures. History, displayed values and the request guards are now per window, with one
+  event subscriber and one poll; the views render the same numbers by construction.
 - **A refresh could show the wrong figures** — reads are async and carried no request guard, so
   a slow read issued earlier (a refresh racing the poll, or a session switch mid-read) could land
   after a newer one and paint its row into the current view, where it stayed until the next read.

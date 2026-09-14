@@ -152,6 +152,66 @@ const matches = (row, storedId) =>
   Boolean(storedId) && (row?.id === storedId || row?.resolved_id === storedId)
 
 /**
+ * ONE HISTORY PER WINDOW. Every accumulator the figures are computed from lives here rather
+ * than in a view, because a view is mounted only while it is on screen: the sidebar pane's
+ * tab unmounts with the tab and the status-bar item can be hidden, so per-instance state gave
+ * a freshly opened view an EMPTY history — it recomputed the session's numbers without the
+ * live counters the other view had accumulated since the app started, which is why clicking
+ * the sidebar area changed the values. The display state below is per instance; the history
+ * is not.
+ */
+const SHARED = {
+  alias: { current: null },
+  best: { current: 0 }, // highest total shown for this session (monotonic guard)
+  chars: { current: 0 }, // characters streamed since the last accounted call
+  chunks: { current: 0 },
+  ctxRef: { current: null },
+  frame: { current: 0 },
+  lastChunkAt: { current: 0 },
+  loadSeq: { current: 0 },
+  pullSeq: { current: 0 },
+  live: { current: 0 }, // completed-call counter (process cumulative) for this session
+  liveAnchor: { current: 0 }, // the counter value the stored row already includes
+  rowTotal: { current: 0 },
+  tickSeen: { current: false }
+}
+
+/**
+ * The display values, shared like the history: with a shared high-water mark and per-view
+ * copies, the view whose row read happened to be older got pinned at the higher figure while
+ * the other moved on — the two views disagreeing, which is what "clicking the sidebar area
+ * changes the values" looked like from the outside. One set of values, every view mirrors it.
+ */
+const UI = { base: null, ctx: null, refreshing: false, rowState: 'pending', subagents: null, version: 0 }
+const UI_SUBSCRIBERS = new Set()
+
+function uiSet(patch) {
+  Object.assign(UI, patch)
+  UI.version += 1
+  UI_SUBSCRIBERS.forEach(listen => listen(UI.version))
+}
+
+/** Read the shared display values, re-rendering when any view writes them. */
+function useUI() {
+  const [, bump] = useState(0)
+
+  useEffect(() => {
+    const listen = () => bump(tick => tick + 1)
+
+    UI_SUBSCRIBERS.add(listen)
+
+    return () => UI_SUBSCRIBERS.delete(listen)
+  }, [])
+
+  return UI
+}
+
+/** Every mounted view's repaint trigger, so one subscriber can refresh all of them. */
+const REPAINTS = new Set()
+/** Install the event subscriptions and the poll ONCE per window, not once per view. */
+const OWNERS = { events: 0, poll: 0 }
+
+/**
  * The monitor itself: subscriptions, the poll, the context pulls and every figure.
  * A hook so both views — the status-bar readout and the sidebar pane — can run it;
  * each mount owns its instance, and each stays correct on its own (the pane is only
@@ -164,33 +224,34 @@ function useMonitor() {
   // The model decides the context WINDOW, so a switch has to invalidate it.
   const model = useValue(host.state.model)
 
-  const [base, setBase] = useState(null) // stored row buckets
-  // 'pending' until the row read settles. Without this the chip painted
-  // base(null→0) + grown(live total) on mount — i.e. the PROCESS-local counter
-  // (~45M) instead of the SESSION total (~92M) for the first ~100ms.
-  const [rowState, setRowState] = useState('pending')
-  // Context window of the focused session — `used / max` and the percentage.
-  // Fed only from payloads already attributed to this session (see takeContext).
-  const [ctx, setCtx] = useState(null)
-  // Subagent sessions spawned under this one: tokens + cost, from the same page.
-  const [subagents, setSubagents] = useState(null)
-  const ctxRef = useRef(null) // mirror with a stable read path for the pullers
+  const { base, ctx, rowState, subagents } = useUI()
+  const [refreshing, setRefreshing] = useState(false)
+  // Writes go through the shared store, so every view of this window shows the same values.
+  // ('pending' until the row read settles: without that gate the chip painted base(null→0) +
+  // the live PROCESS counter instead of the session total for the first ~100ms.)
+  const setBase = value => uiSet({ base: value })
+  const setCtx = value => uiSet({ ctx: value })
+  const setRowState = value => uiSet({ rowState: value })
+  const setSubagents = value => uiSet({ subagents: value })
+  const ctxRef = SHARED.ctxRef // mirror with a stable read path for the pullers
   const [, repaint] = useState(0)
 
-  const live = useRef(0) // completed-call counters for the focused runtime session
-  const liveAnchor = useRef(0) // counter value the current base row already includes
-  const rowTotalRef = useRef(0) // stored total at the last read — detects a row advance
-  const tickSeen = useRef(false) // has this plugin lifetime seen the counter's baseline yet
+  const live = SHARED.live // shared: a view that mounts late inherits this history
+  const liveAnchor = SHARED.liveAnchor
+  const rowTotalRef = SHARED.rowTotal // stored total at the last read — detects a row advance
+  const tickSeen = SHARED.tickSeen // has the counter's baseline been seen yet
   // In-flight request guards. Reads are async, and a slow one can land AFTER a newer one
   // (a refresh racing the poll, or a session switch mid-read) — which painted the previous
   // session's row into the current one: the "refresh shows the wrong values" report.
-  const loadSeq = useRef(0)
-  const pullSeq = useRef(0)
-  const chars = useRef(0) // characters streamed since the last accounted call
-  const chunks = useRef(0) // chunks since the last accounted call
-  const lastChunkAt = useRef(0) // arrival time of the previous chunk
-  const best = useRef(0) // highest total rendered this session (monotonic guard)
-  const frame = useRef(0)
+  // The guards are shared with the state: any read supersedes the reads before it, whichever
+  // view issued them, so a slow response can never write stale figures into the one store.
+  const loadSeq = SHARED.loadSeq
+  const pullSeq = SHARED.pullSeq
+  const chars = SHARED.chars
+  const chunks = SHARED.chunks
+  const lastChunkAt = SHARED.lastChunkAt
+  const best = SHARED.best
+  const frame = SHARED.frame
   const storedRef = useRef(storedId)
   const runtimeRef = useRef(runtimeId)
   // Runtime id learned from this session's own `session.info` (payload carries the
@@ -210,12 +271,22 @@ function useMonitor() {
   // Repaint on the next animation frame after a change: ≤16ms of latency, and
   // chunks arrive faster than any display can show. No tween — the rendered
   // number IS the computed total.
+  // Repaint THIS view, and register it so the window's single subscriber can repaint it too
+  // (a view that is not the subscriber still has to move when the numbers do).
+  const mine = useCallback(() => repaint(tick => tick + 1), [])
+
+  useEffect(() => {
+    REPAINTS.add(mine)
+
+    return () => REPAINTS.delete(mine)
+  }, [mine])
+
   const schedule = useCallback(() => {
     if (frame.current) return
 
     frame.current = requestAnimationFrame(() => {
       frame.current = 0
-      repaint(tick => tick + 1)
+      REPAINTS.forEach(fn => fn())
     })
   }, [])
 
@@ -242,6 +313,16 @@ function useMonitor() {
 
   useEffect(() => {
     if (typeof host.onEvent !== 'function') return undefined
+
+    // One subscriber per window: a second view must not re-register the same handlers
+    // (that would double-count the streamed text and double the reads).
+    OWNERS.events += 1
+
+    if (OWNERS.events > 1) {
+      return () => {
+        OWNERS.events -= 1
+      }
+    }
 
     // STRICT ownership: an event belongs to this window's focused session only if
     // it carries that session's runtime id or its stored id. Both are per-window
@@ -327,7 +408,10 @@ function useMonitor() {
       host.onEvent('reasoning.delta', countText)
     ]
 
-    return () => offs.forEach(off => off())
+    return () => {
+      OWNERS.events -= 1
+      offs.forEach(off => off())
+    }
   }, [schedule, takeContext])
 
   // Completed calls arrive as `session.usage` EVENTS, attributed strictly below.
@@ -480,7 +564,6 @@ function useMonitor() {
   // render, so referencing a later `const` would be a temporal-dead-zone error).
   // Manual refresh for the panel's header button: re-read the stored row now
   // instead of waiting for the next poll. `refreshing` only drives the spinner.
-  const [refreshing, setRefreshing] = useState(false)
   const refresh = useCallback(async () => {
     setRefreshing(true)
 
@@ -557,12 +640,21 @@ function useMonitor() {
     void load()
     void pullContext()
 
-    const timer = setInterval(() => {
-      void load()
-      void pullContext() // no-op unless the window is still unknown
-    }, POLL_MS)
+    // One poll per window, for the same reason as one subscriber.
+    OWNERS.poll += 1
 
-    return () => clearInterval(timer)
+    const timer =
+      OWNERS.poll === 1
+        ? setInterval(() => {
+            void load()
+            void pullContext() // no-op unless the window is still unknown
+          }, POLL_MS)
+        : 0
+
+    return () => {
+      OWNERS.poll -= 1
+      if (timer) clearInterval(timer)
+    }
   }, [load])
 
   const baseTotal = base?.total ?? 0
