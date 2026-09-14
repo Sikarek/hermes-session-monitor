@@ -396,7 +396,7 @@ function TokenPanel({ stats }) {
     jsxs('li', {
       className: cn('flex items-baseline justify-between gap-2', options.indent ? 'pl-3' : ''),
       children: [
-        jsx('span', { className: 'truncate text-muted-foreground', children: label }),
+        jsx('span', { className: 'truncate text-foreground', children: label }),
         jsxs('span', {
           className: 'flex shrink-0 items-baseline gap-2',
           children: [
@@ -452,14 +452,14 @@ function TokenPanel({ stats }) {
         className: 'flex flex-col gap-1.5 border-t border-border/50 pt-2.5',
         children: [
           jsxs('div', { className: 'flex items-baseline justify-between gap-2 text-[0.6875rem]', children: [
-            jsx('span', { className: 'text-muted-foreground', children: 'Cache hit rate' }),
+            jsx('span', { className: 'text-foreground', children: 'Cache hit rate' }),
             jsx('span', {
               className: 'tabular-nums text-muted-foreground',
               children: typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : '—'
             })
           ]}),
           jsxs('div', { className: 'flex items-baseline justify-between gap-2 text-[0.6875rem]', children: [
-            jsx('span', { className: 'text-muted-foreground', children: 'Cost' }),
+            jsx('span', { className: 'text-foreground', children: 'Cost' }),
             jsx('span', {
               className: 'tabular-nums text-muted-foreground',
               children:

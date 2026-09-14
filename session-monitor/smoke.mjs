@@ -412,13 +412,21 @@ if (!live.failures.length) {
       throw new Error(`panel width class missing ("${panelEl.className}")`)
     }
 
-    // CONTRAST CONTRACT: the title is the only full-contrast text in the panel —
-    // every figure is muted (hierarchy by weight, not by colour). `text-foreground/90`
-    // is a different class token, so `classList.contains` sees only exact matches.
+    // CONTRAST CONTRACT: labels are highlighted, NUMBERS ARE NOT. So no element
+    // carrying `text-foreground` may contain a digit, and every label must carry
+    // it. (`text-foreground/90` is a different class token and is not counted.)
     const vivid = [...panelEl.querySelectorAll('*')].filter(el => el.classList.contains('text-foreground'))
+    const vividText = vivid.map(el => (el.textContent ?? '').trim())
+    const numeric = vividText.filter(text => /\d/.test(text))
 
-    if (vivid.length !== 1 || !(vivid[0].textContent ?? '').includes('Session monitor')) {
-      throw new Error(`expected the title to be the only full-contrast text, got ${vivid.length}: ${vivid.map(el => el.textContent).join(' | ').slice(0, 90)}`)
+    if (numeric.length) {
+      throw new Error(`numbers must never be highlighted — got: ${numeric.join(' | ').slice(0, 90)}`)
+    }
+
+    for (const label of ['Session monitor', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
+      if (!vividText.includes(label)) {
+        throw new Error(`label is not highlighted: "${label}" (highlighted: ${vividText.join(' | ').slice(0, 90)})`)
+      }
     }
 
     const expectedShare = ((WINDOWS.a.cacheRead / (WINDOWS.a.cacheRead + 1000 + 500)) * 100).toFixed(2) + '%'
