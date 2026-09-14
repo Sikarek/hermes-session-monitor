@@ -1,5 +1,5 @@
 /**
- * Session Tokens — the focused session's cumulative token consumption, in the
+ * Session Monitor — the focused session's cumulative token consumption, in the
  * status bar. Adds the streamed text's tokens AS THEY ARRIVE: no smoothing, no
  * interpolation, no tween. The number jumps when the agent produces something.
  *
@@ -31,10 +31,11 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
- * PANEL — three rows that PARTITION the session total (Cache hit = cache read +
- * cache write, Cache miss = uncached input, Output = generation incl. reasoning),
- * then a hairline and two derived figures (cache hit rate, cost). Shares are all
- * of the session total, so they sum to 100%.
+ * PANEL — titled "Session monitor": three rows that PARTITION the session total
+ * (Cache hit = cache read + cache write, Cache miss = uncached input, Output =
+ * generation incl. reasoning), closed by the Total row they sum to, then a
+ * hairline and two derived figures (cache hit rate, cost). Shares are all of the
+ * session total, so they sum to 100%.
  *
  * WHAT IT READS — the complete surface, verifiable by reading this file:
  *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile
@@ -55,7 +56,7 @@ import { cn, Popover, PopoverContent, PopoverTrigger, host, useValue } from '@he
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-const ID = 'session-tokens'
+const ID = 'session-monitor'
 
 /** Idle poll: catches writes this process did not make (cron, subagents, another window). */
 const POLL_MS = 15_000
@@ -75,7 +76,7 @@ function debug(label, payload) {
   if (!DEBUG || debugBudget <= 0) return
 
   debugBudget -= 1
-  console.error(`[session-tokens] ${label} ${JSON.stringify({ ...payload, t: Date.now() - BOOT })}`)
+  console.error(`[session-monitor] ${label} ${JSON.stringify({ ...payload, t: Date.now() - BOOT })}`)
 }
 
 const tokenCount = row =>
@@ -415,18 +416,10 @@ function TokenPanel({ stats }) {
     }, key)
 
   return jsxs('div', {
-    'data-slot': 'session-tokens-panel',
+    'data-slot': 'session-monitor-panel',
     className: 'flex w-80 flex-col gap-3 p-3 text-[0.75rem]',
     children: [
-      jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
-        jsx('p', { className: 'font-medium text-foreground', children: 'Session tokens' }),
-        jsx('span', {
-          className: 'tabular-nums text-[0.6875rem] text-muted-foreground',
-          // `~` while any part of the number is an estimate (streamed text, or
-          // growth not yet written to the stored row).
-          children: `${estimating ? '~' : ''}${fmt(total)}`
-        })
-      ]}),
+      jsx('p', { className: 'font-medium text-foreground', children: 'Session monitor' }),
       // Provenance appears ONLY in the degraded case. The ordinary
       // "N messages · this session's record" line was removed on request, but a
       // figure computed from live counters alone must still say so.
@@ -450,7 +443,12 @@ function TokenPanel({ stats }) {
       jsxs('ul', { className: 'flex flex-col gap-1.5', children: [
         row('cached', 'Cache hit', fmt(cachedInput), share(cachedInput)),
         row('in', 'Cache miss', fmt(base?.in ?? 0), share(base?.in ?? 0)),
-        row('out', 'Output', fmt(base?.out ?? 0), share(base?.out ?? 0))
+        row('out', 'Output', fmt(base?.out ?? 0), share(base?.out ?? 0)),
+        // The total closes the block: the three rows above add up to it, so it
+        // sits under them instead of in the header. `~` marks a figure that still
+        // contains an estimate (streamed text, or growth not yet written to the
+        // stored row). No share — it IS the denominator of every share above.
+        row('total', 'Total', `${estimating ? '~' : ''}${fmt(total)}`, null, { strong: true })
       ]}),
       // Derived metrics, deliberately below a hairline: Cache hit rate and Cost are
       // computed from the session, not measured token buckets.
@@ -500,7 +498,7 @@ class ChipGuard extends Component {
   }
 
   componentDidCatch(error) {
-    console.error(`[session-tokens] chip render failed — contained: ${error?.message}`)
+    console.error(`[session-monitor] chip render failed — contained: ${error?.message}`)
   }
 
   render() {
@@ -510,7 +508,7 @@ class ChipGuard extends Component {
 
 export default {
   id: ID,
-  name: 'Session Tokens',
+  name: 'Session Monitor',
   description: 'Live per-session tokens, cost and cache-hit rate for the current session',
   register(ctx) {
     debug('loaded', { at: new Date().toISOString() })
@@ -524,8 +522,10 @@ export default {
       area: 'statusBar.right',
       order: 205,
       data: {
-        id: 'session-tokens',
-        toggleLabel: 'Session tokens',
+        // Contribution id: must stay unique in the bar and is what the persisted
+        // hide flag is keyed on (renaming it resets that one toggle).
+        id: 'session-monitor',
+        toggleLabel: 'Session monitor',
         render: () => jsx(ChipGuard, { children: jsx(Chip, {}) })
       }
     })

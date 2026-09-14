@@ -13,10 +13,11 @@ A live token, cost and cache-hit monitor for the **Hermes Desktop** status bar. 
 Click the chip for the breakdown:
 
 ```
-Session tokens                197,238,947
+Session monitor
 Cache hit                 196,470,400   99.61%     prompt tokens served from the provider cache
 Cache miss                    353,194    0.18%     uncached input
 Output                        415,353    0.21%     everything the model generated
+Total                     197,238,947              the three rows above, added up
 ──────────────────────────────────────────────
 Cache hit rate                99.82%
 Cost                         $1.7832
@@ -32,7 +33,7 @@ Cost                         $1.7832
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
 | **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                     |
 
-The three token rows **partition** the session total: `cache hit + cache miss + output` equals it exactly, so the percentages sum to 100% and no token is counted in two rows.
+The three token rows **partition** the session total: `cache hit + cache miss + output` equals the **Total** row shown beneath them exactly, so the percentages sum to 100% and no token is counted in two rows.
 
 The number moves **while the model works**: streamed reasoning and reply text are counted chunk by chunk as they arrive, and each completed API call snaps the total to the provider's reported figure.
 
@@ -43,14 +44,14 @@ macOS / Linux:
 ```bash
 git clone https://github.com/Sikarek/hermes-session-monitor.git
 mkdir -p ~/.hermes/desktop-plugins
-cp -r hermes-session-monitor/desktop-plugins/session-tokens ~/.hermes/desktop-plugins/
+cp -r hermes-session-monitor/session-monitor ~/.hermes/desktop-plugins/
 ```
 
-Windows: copy `desktop-plugins\session-tokens` to `%LOCALAPPDATA%\hermes\desktop-plugins\session-tokens\`.
+Windows: copy the `session-monitor` folder to `%LOCALAPPDATA%\hermes\desktop-plugins\session-monitor\`.
 
 No build step and no backend changes. The app watches that folder, so the chip appears within a second; if it doesn't, press ⌘K → **Reload desktop plugins**.
 
-**Uninstall:** `rm -rf ~/.hermes/desktop-plugins/session-tokens`. The plugin writes nothing outside its own folder — no config keys, no stored data.
+**Uninstall:** `rm -rf ~/.hermes/desktop-plugins/session-monitor`. The plugin writes nothing outside its own folder — no config keys, no stored data.
 
 ## Usage
 
@@ -58,8 +59,8 @@ No build step and no backend changes. The app watches that folder, so the chip a
 | ---------------- | -------------------------------------------------------------------- |
 | Chip             | Right end of the status bar                                          |
 | Detail panel     | Click the chip                                                       |
-| Hide / show      | Right-click the status bar →**Session tokens**                |
-| Disable entirely | Settings → Skills → Plugins →*Session Tokens* → Desktop switch |
+| Hide / show      | Right-click the status bar → **Session monitor**              |
+| Disable entirely | Settings → Skills → Plugins → *Session Monitor* → Desktop switch |
 
 ## How it works
 
@@ -117,7 +118,7 @@ The plugin displays numbers the app already has. It makes **no network requests 
 Verify each claim from the repository root:
 
 ```bash
-cd desktop-plugins/session-tokens
+cd session-monitor
 
 # 1) no network, storage, filesystem or process access anywhere in the file
 grep -nE "fetch\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage|ctx\.storage|process\.|require\(" plugin.js
@@ -169,7 +170,7 @@ The plugin is one plain-ESM file: no build step, hot-reloaded on save.
 Run the mount test before installing an edited copy:
 
 ```bash
-node desktop-plugins/session-tokens/smoke.mjs
+node session-monitor/smoke.mjs
 ```
 
 It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel rows and share column, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.

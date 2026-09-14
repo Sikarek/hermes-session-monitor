@@ -1,4 +1,4 @@
-# Session Tokens — plugin maintenance notes
+# Session Monitor — plugin maintenance notes
 
 The status-bar chip itself. What it shows, how the numbers are sourced and its privacy surface are documented once, in the [root README](../../README.md); this file covers only working on the plugin.
 
@@ -10,8 +10,8 @@ The status-bar chip itself. What it shows, how the numbers are sourced and its p
 ## Install / uninstall
 
 ```bash
-cp -r desktop-plugins/session-tokens ~/.hermes/desktop-plugins/   # install — folder name must equal the plugin id
-rm -rf ~/.hermes/desktop-plugins/session-tokens                   # uninstall — removes everything
+cp -r session-monitor ~/.hermes/desktop-plugins/   # install — folder name must equal the plugin id
+rm -rf ~/.hermes/desktop-plugins/session-monitor   # uninstall — removes everything
 ```
 
 ## Editing
@@ -19,7 +19,7 @@ rm -rf ~/.hermes/desktop-plugins/session-tokens                   # uninstall �
 The app watches this folder, so a bad save is live within a second, and an uncontained throw during render or effect reaches the app's **root** error boundary, which blanks the entire interface. Test before saving:
 
 ```bash
-node desktop-plugins/session-tokens/smoke.mjs          # exit 0 = safe to install
+node session-monitor/smoke.mjs                         # exit 0 = safe to install
 HERMES_REPO=/path/to/hermes-agent node …/smoke.mjs      # if the checkout is elsewhere
 SMOKE_TARGET=/tmp/candidate.js node …/smoke.mjs         # test a staged file instead
 ```
@@ -39,7 +39,7 @@ If the interface breaks anyway: ⌘K → **Reload window**, then grep `error-bou
 ## Manual verification
 
 ```bash
-# toggle: right-click the status bar → Session tokens; Settings → Skills → Plugins → Desktop switch
+# toggle: right-click the status bar → Session monitor; Settings → Skills → Plugins → Desktop switch
 
 # cross-check the chip against the endpoint it reads (the bearer token comes from
 # the backend process env; the port is the one the gateway is listening on)

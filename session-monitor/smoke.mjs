@@ -12,7 +12,7 @@
  *     whole window; that happened twice here, so it is now a test.
  *
  * Usage (any cwd):
- *   node ~/.hermes/desktop-plugins/session-tokens/smoke.mjs            # tests plugin.js in place
+ *   node ~/.hermes/desktop-plugins/session-monitor/smoke.mjs            # tests plugin.js in place
  *   SMOKE_TARGET=/tmp/staged.js node smoke.mjs                         # tests a staged copy
  *
  * Exit 0 = safe to install. Non-zero = do NOT let the app load it.
@@ -362,15 +362,25 @@ if (!live.failures.length) {
     const panel = document.body.textContent ?? ''
     const expectedTotal = stored.toLocaleString('en-US')
 
-    for (const needle of ['Session tokens', 'Cache hit', 'Cache miss', 'Output', 'Cache hit rate', 'Cost']) {
+    for (const needle of ['Session monitor', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
       if (!panel.includes(needle)) throw new Error(`panel is missing "${needle}" — got: ${panel.slice(0, 200)}`)
+    }
+
+    // ROW ORDER contract: the total sits UNDER the three rows it sums (it used to
+    // ride in the header), and the title opens the panel.
+    const iTitle = panel.indexOf('Session monitor')
+    const iOut = panel.indexOf('Output')
+    const iTotal = panel.indexOf('Total')
+
+    if (!(iTitle < iOut && iOut < iTotal)) {
+      throw new Error(`panel order wrong: title@${iTitle} Output@${iOut} Total@${iTotal}`)
     }
 
     // WIDTH CONTRACT: the popover must not pin a width while the panel declares its
     // own. Pinning w-72 around a w-80 panel clipped 32px off the right edge — the
     // exact "box looks broken" regression.
     const popoverEl = document.querySelector('[data-stub="popover-content"]')
-    const panelEl = document.querySelector('[data-slot="session-tokens-panel"]')
+    const panelEl = document.querySelector('[data-slot="session-monitor-panel"]')
 
     if (!popoverEl || !panelEl) throw new Error('could not locate the popover or the panel element')
 
@@ -386,7 +396,9 @@ if (!live.failures.length) {
     const expectedTotalText = (WINDOWS.a.cacheRead + 1000 + 500).toLocaleString('en-US')
 
     if (!panel.includes(expectedShare)) throw new Error(`panel share column missing ${expectedShare} — got: ${panel.slice(0, 220)}`)
-    if (document.querySelector('[data-slot="session-tokens-bar"]')) throw new Error('the segmented bar is back — it was replaced by the share column')
+    if (document.querySelector('[data-slot="session-monitor-bar"], [data-slot="session-tokens-bar"]')) {
+      throw new Error('the segmented bar is back — it was replaced by the share column')
+    }
     if (panel.includes('Input (uncached)')) throw new Error("old flat label 'Input (uncached)' is back")
 
     if (!panel.includes(expectedTotal)) throw new Error(`panel total missing (${expectedTotal}) — got: ${panel.slice(0, 160)}`)
