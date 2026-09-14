@@ -31,7 +31,8 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
- * PANEL — titled "Session monitor": the CONTEXT window (used / max + a fill bar)
+ * PANEL — titled "Session monitor" with a refresh button (re-reads the stored row
+ * on click): the CONTEXT window (used / max + a fill bar)
  * above the token section, then three rows that PARTITION the session total
  * (Cache hit = cache read + cache write, Cache miss = uncached input, Output =
  * generation incl. reasoning), closed by the Total row they sum to, then a
@@ -53,7 +54,7 @@
  */
 
 import { Component } from 'react'
-import { cn, Popover, PopoverContent, PopoverTrigger, host, useValue } from '@hermes/plugin-sdk'
+import { Button, cn, icons, Popover, PopoverContent, PopoverTrigger, host, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -305,6 +306,22 @@ function Chip() {
     }
   }, [profile, storedId])
 
+  // Manual refresh (declared AFTER `load`: its dependency array is evaluated during
+  // render, so referencing a later `const` would be a temporal-dead-zone error).
+  // Manual refresh for the panel's header button: re-read the stored row now
+  // instead of waiting for the next poll. `refreshing` only drives the spinner.
+  const [refreshing, setRefreshing] = useState(false)
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+
+    try {
+      await load()
+    } finally {
+      setRefreshing(false)
+    }
+  }, [load])
+
+
   // Session switch: every term belongs to the previous session.
   useEffect(() => {
     live.current = 0
@@ -401,7 +418,7 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, {
-          stats: { base, ctx, grown, rowState, streamed, total }
+          stats: { base, ctx, grown, onRefresh: refresh, refreshing, rowState, streamed, total }
         })
       })
     ]
@@ -414,7 +431,7 @@ function Chip() {
  * muted, figure full contrast), a hairline before the derived figures.
  */
 function TokenPanel({ stats }) {
-  const { base, ctx, grown, rowState, streamed, total } = stats
+  const { base, ctx, grown, onRefresh, refreshing, rowState, streamed, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   const estimating = grown > 0 || streamed > 0
@@ -438,7 +455,26 @@ function TokenPanel({ stats }) {
     // 320px left a third of the box empty once the percentage column went away.
     className: 'flex w-64 flex-col gap-3 p-3 text-[0.75rem]',
     children: [
-      jsx('p', { className: 'font-medium text-foreground', children: 'Session monitor' }),
+      jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+        jsx('p', { className: 'font-medium text-foreground', children: 'Session monitor' }),
+        // Refresh re-reads the stored row immediately (the poll is every POLL_MS).
+        // `title` rather than the SDK's Tip: the app tooltip was removed from this
+        // plugin on request and the smoke test fails if a Tip comes back.
+        jsx(
+          Button,
+          {
+            'aria-label': 'Refresh',
+            className: 'text-muted-foreground hover:text-foreground',
+            disabled: refreshing,
+            onClick: onRefresh,
+            size: 'icon-xs',
+            title: 'Refresh',
+            variant: 'ghost',
+            children: jsx(icons.RefreshCw, { className: cn(refreshing && 'animate-spin') })
+          },
+          'refresh'
+        )
+      ]}),
       // Provenance appears ONLY in the degraded case. The ordinary
       // "N messages · this session's record" line was removed on request, but a
       // figure computed from live counters alone must still say so.

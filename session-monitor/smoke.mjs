@@ -50,7 +50,7 @@ const names = importMatch[1]
   .map(entry => entry.trim())
   .filter(Boolean)
 
-const KNOWN = ['atom', 'cn', 'compactNumber', 'host', 'icons', 'Popover', 'PopoverContent', 'PopoverTrigger', 'Tip', 'usePluginI18n', 'useValue']
+const KNOWN = ['atom', 'Button', 'cn', 'compactNumber', 'host', 'icons', 'Popover', 'PopoverContent', 'PopoverTrigger', 'Tip', 'usePluginI18n', 'useValue']
 
 // The temp module must live INSIDE the repo so its bare `react` imports resolve.
 const tmph = fs.mkdtempSync(path.join(REPO, '.st-smoke-'))
@@ -64,6 +64,7 @@ const stubFor = w => {
   const runtime = JSON.stringify(w.runtime)
   const stored = JSON.stringify(w.stored)
   const cacheRead = String(w.cacheRead)
+  const LIST_CALLS = JSON.stringify(`__stListCalls_${w.key}`)
   const tail = names.filter(name => !KNOWN.includes(name)).map(name => `export const ${name} = noop`).join('\n')
 
   return `
@@ -100,7 +101,11 @@ export const host = {
   },
   restartGateway: async () => {}, status: async () => ({}),
   logs: { tail: async () => [] },
-  listPersistedSessions: async () => ({
+  // Counted so the refresh-button contract can assert that a fresh read happened.
+  listPersistedSessions: async () => {
+    globalThis[${LIST_CALLS}] = (globalThis[${LIST_CALLS}] ?? 0) + 1
+
+    return {
     limit: 1, offset: 0, total: 1,
     sessions: [{
       cache_read_tokens: ${cacheRead}, cache_write_tokens: 0, cost_source: 'provider_models_api',
@@ -108,7 +113,8 @@ export const host = {
       input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
       resolved_id: ${runtime}
     }]
-  })
+    }
+  }
 }
 
 export const useValue = value => (value && typeof value.get === 'function' ? value.get() : value)
@@ -116,6 +122,7 @@ export const usePluginI18n = () => (key, ...args) => [key, ...args].join(' ')
 export const compactNumber = value => String(value ?? 0)
 export const cn = (...args) => args.filter(Boolean).join(' ')
 import { createElement, useEffect } from 'react'
+export const Button = ({ children, ...props }) => createElement('button', props, children)
 export const Popover = ({ children, onOpenChange }) => {
   useEffect(() => { onOpenChange?.(true) }, [])
   return createElement('div', { 'data-stub': 'popover' }, children)
@@ -404,6 +411,35 @@ if (!live.failures.length) {
 
     if ((document.body.textContent ?? '').includes('999 / 1,000')) {
       throw new Error('a foreign session.info painted its context window')
+    }
+
+    // REFRESH CONTRACT: the panel header carries a refresh button, and pressing it
+    // re-reads the stored session row immediately instead of waiting for the poll.
+    // Self-contained lookup: this block runs before `panelEl` is declared below.
+    const refreshPanel = document.querySelector('[data-slot="session-monitor-panel"]')
+    const refreshBtn = refreshPanel?.querySelector('button')
+    const beforeCalls = globalThis.__stListCalls_A ?? 0
+
+    if (!refreshBtn) throw new Error('the panel header has no refresh button')
+    if (!(refreshBtn.getAttribute('aria-label') === 'Refresh')) {
+      throw new Error(`the header button is not labelled as refresh ("${refreshBtn.getAttribute('aria-label')}")`)
+    }
+
+    refreshBtn.click()
+    await wait(400)
+
+    const afterCalls = globalThis.__stListCalls_A ?? 0
+
+    if (afterCalls <= beforeCalls) {
+      throw new Error(`refresh did not re-read the stored row (reads ${beforeCalls} → ${afterCalls})`)
+    }
+
+    // The title stays first in the header, the button second.
+    const header = refreshPanel?.querySelector('div')
+    const headerText = header?.textContent ?? ''
+
+    if (!headerText.startsWith('Session monitor')) {
+      throw new Error(`the header is not title-then-button: "${headerText.slice(0, 60)}"`)
     }
 
     // The hover tooltip was removed on request (the click panel carries the

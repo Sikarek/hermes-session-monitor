@@ -91,6 +91,9 @@ below are the release-level summary.
   not restart the count at zero.
 - **Per-session isolation** — a second window, another session, or a subagent can
   never contribute to this chip.
+- **Refresh button** in the panel header — re-reads the stored session row
+  immediately instead of waiting for the next poll, with the row's spinner while
+  the read is in flight.
 - **Mount test** (`smoke.mjs`) — run before installing an edited copy; it fails on
   render and effect-time errors, which `node --check` cannot see.
 

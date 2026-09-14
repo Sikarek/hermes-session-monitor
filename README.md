@@ -11,7 +11,7 @@ A live token, context-window, cost and cache-hit monitor for the **Hermes Deskto
 Click the chip for the breakdown:
 
 ```
-Session monitor
+Session monitor                            ↻      refresh (re-reads the stored row)
 Context             421,888 / 1,000,000 · 42%     the window in use
 █████████████████░░░░░░░░░░░░░░░░░░░░░░░          fill bar = share of the window
 Cache hit                 196,470,400     prompt tokens served from the provider cache
@@ -60,6 +60,7 @@ No build step and no backend changes. The app watches that folder, so the chip a
 | ---------------- | -------------------------------------------------------------------- |
 | Chip             | Right end of the status bar                                          |
 | Detail panel     | Click the chip                                                       |
+| Refresh          | **↻** at the top right of the panel — re-reads the stored session row now instead of waiting for the next poll |
 | Hide / show      | Right-click the status bar → **Session monitor**              |
 | Disable entirely | Settings → Skills → Plugins → *Session Monitor* → Desktop switch |
 
@@ -178,7 +179,7 @@ Run the mount test before installing an edited copy:
 node session-monitor/smoke.mjs
 ```
 
-It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks and attributed usage/context payloads, asserts the panel rows, the labels/figures contrast rule, the context bar width and the percentage-free rows, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
+It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks and attributed usage/context payloads, asserts the panel rows, the labels/figures contrast rule, the context bar width, the percentage-free rows and that the header's refresh button triggers a fresh read, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
 
 ## License
 
