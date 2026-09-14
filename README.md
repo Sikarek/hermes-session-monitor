@@ -249,6 +249,4 @@ old window on screen).
 
 MIT — see [LICENSE](LICENSE).
 
-## Why this exists
-
-This is my first public repository. I built it because I wanted to see my real-time token usage, and I figured other people might find it useful too. :)
+Author notes: this is my first public repo, i built it because i want to see my realtime token usage, and i think other people might find it useful too :)
