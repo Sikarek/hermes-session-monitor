@@ -612,7 +612,6 @@ function Chip() {
     className:
       'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums',
     children: [
-      jsx('span', { children: 'Σ' }),
       // Fixed-width estimate slot: the marker appearing and disappearing used
       // to change the chip's width and shove the neighbouring status items.
       jsx('span', {
@@ -621,7 +620,8 @@ function Chip() {
       }),
       jsx('span', {
         children: ready
-          ? `${fmt(chipTotal)} tok${costLabel ? ' · ' + costLabel : ''}${hitLabel ? ' · ' + hitLabel : ''}`
+          ? // Reading order: how much, how well it cached, what it cost.
+            `${fmt(chipTotal)} tok${hitLabel ? ' · ' + hitLabel : ''}${costLabel ? ' · ' + costLabel : ''}`
           : // Before any value exists: a placeholder, never a zero that climbs.
             '… tok'
       })
@@ -799,7 +799,7 @@ function TokenPanel({ stats }) {
  * Local error boundary. A throw from a plugin contribution otherwise reaches the
  * app's ROOT boundary and blanks the entire interface (this happened twice while
  * this plugin was being developed — a one-line slip cost the whole window). With
- * this in place the worst case is a chip that reads "Σ — tok", and the failure is
+ * this in place the worst case is a chip that reads "— tok", and the failure is
  * logged where it can be found.
  */
 class ChipGuard extends Component {
@@ -817,7 +817,7 @@ class ChipGuard extends Component {
   }
 
   render() {
-    return this.state.failed ? jsx('span', { children: 'Σ — tok' }) : this.props.children
+    return this.state.failed ? jsx('span', { children: '— tok' }) : this.props.children
   }
 }
 

@@ -5,7 +5,7 @@
 A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** app: a figure in the status bar, and the full breakdown in a **sidebar pane** beside your session list. It reports how many tokens the focused session has actually processed (its subagents included), how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
 ```
-Σ 197,238,947 tok · $1.78 · 99.82%            the chip, at the right end of the status bar
+197,238,947 tok · 99.82% · $1.78            the chip, at the right end of the status bar
 ```
 
 The status-bar figure is a readout; the detail view is a pane in the left sidebar (**SESSIONS | Session monitor**, also listed in ⌘K):
@@ -164,7 +164,7 @@ grep -n "text.length" plugin.js
 
 **One platform caveat, stated plainly:** a Hermes desktop plugin is **not sandboxed** — it runs with the app's privileges, so a plugin *could* do more than this one does. The host restricts which modules a plugin may import, not what it may then call — which is why the surface above is kept small and documented rather than assumed.
 
-**Failures are contained.** The chip wraps its own render in an error boundary, so a bug inside it degrades to `Σ — tok` instead of reaching the app's root boundary.
+**Failures are contained.** The chip wraps its own render in an error boundary, so a bug inside it degrades to `— tok` instead of reaching the app's root boundary.
 
 ## Compatibility
 

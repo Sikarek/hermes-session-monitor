@@ -477,6 +477,15 @@ if (!live.failures.length) {
       throw new Error(`streamed chunks did not reach the total: expected "${expected}" in "${after.trim().slice(0, 90)}" (was "${before.trim().slice(0, 60)}")`)
     }
 
+    // CHIP ORDER contract: how much · how well it cached · what it cost, no Σ prefix.
+    const chipText = live.container.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? ''
+    const at = { cost: chipText.indexOf('$'), hit: chipText.indexOf('%'), tok: chipText.indexOf(' tok') }
+
+    if (chipText.includes('\u03a3')) throw new Error(`the Σ prefix is back on the chip: "${chipText}"`)
+    if (!(at.tok > -1 && at.hit > at.tok && at.cost > at.hit)) {
+      throw new Error(`chip reading order should be tokens · hit rate · cost — got "${chipText}"`)
+    }
+
     // COMPLETED-CALL contract: `total` is the agent PROCESS's cumulative counter for
     // the session, so the first tick of a plugin lifetime is a BASELINE — the stored
     // row already contains most of a process cumulative, and claiming it as growth is
