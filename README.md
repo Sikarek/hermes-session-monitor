@@ -14,13 +14,13 @@ Click the chip for the breakdown:
 
 ```
 Session monitor
-Cache hit                 196,470,400   99.61%     prompt tokens served from the provider cache
-Cache miss                    353,194    0.18%     uncached input
-Output                        415,353    0.21%     everything the model generated
-Total                     197,238,947              the three rows above, added up
+Cache hit                 196,470,400     prompt tokens served from the provider cache
+Cache miss                    353,194     uncached input
+Output                        415,353     everything the model generated
+Total                     197,238,947     the three rows above, added up
 ──────────────────────────────────────────────
 Cache hit rate                99.82%
-Cost                         $1.7832
+Cost                             $1.78
 ```
 
 ## What it shows
@@ -33,7 +33,7 @@ Cost                         $1.7832
 | **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
 | **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                     |
 
-The three token rows **partition** the session total: `cache hit + cache miss + output` equals the **Total** row shown beneath them exactly, so the percentages sum to 100% and no token is counted in two rows.
+The three token rows **partition** the session total: `cache hit + cache miss + output` equals the **Total** row shown beneath them exactly, so no token is counted in two rows. The rows carry no percentages — the Total beneath them states the partition, and the cache ratio is the **Cache hit rate** figure below the rule.
 
 The number moves **while the model works**: streamed reasoning and reply text are counted chunk by chunk as they arrive, and each completed API call snaps the total to the provider's reported figure.
 
@@ -173,7 +173,7 @@ Run the mount test before installing an edited copy:
 node session-monitor/smoke.mjs
 ```
 
-It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel rows and share column, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
+It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel rows and the labels/figures contrast rule, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
 
 ## License
 

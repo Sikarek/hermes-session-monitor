@@ -434,12 +434,18 @@ if (!live.failures.length) {
       throw new Error(`expected every figure highlighted (3 rows + total + rate + cost), got ${figures.length}: ${vividText.join(' | ').slice(0, 90)}`)
     }
 
-    const expectedShare = ((WINDOWS.a.cacheRead / (WINDOWS.a.cacheRead + 1000 + 500)) * 100).toFixed(2) + '%'
     const expectedTotalText = (WINDOWS.a.cacheRead + 1000 + 500).toLocaleString('en-US')
 
-    if (!panel.includes(expectedShare)) throw new Error(`panel share column missing ${expectedShare} — got: ${panel.slice(0, 220)}`)
+    // The row percentages were removed on request — the Total states the partition.
+    // Scoped to the panel's `li` rows: a whole-body substring test false-positives
+    // on the chip's hit rate ("100.00%" contains "0.00%").
+    const rowText = [...panelEl.querySelectorAll('li')].map(el => (el.textContent ?? '').trim()).join(' | ')
+
+    if (rowText.includes('%')) {
+      throw new Error(`row percentage is back — it was removed on request: ${rowText.slice(0, 120)}`)
+    }
     if (document.querySelector('[data-slot="session-monitor-bar"], [data-slot="session-tokens-bar"]')) {
-      throw new Error('the segmented bar is back — it was replaced by the share column')
+      throw new Error('the segmented bar is back — it was removed on request')
     }
     if (panel.includes('Input (uncached)')) throw new Error("old flat label 'Input (uncached)' is back")
 

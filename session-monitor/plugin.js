@@ -34,8 +34,8 @@
  * PANEL — titled "Session monitor": three rows that PARTITION the session total
  * (Cache hit = cache read + cache write, Cache miss = uncached input, Output =
  * generation incl. reasoning), closed by the Total row they sum to, then a
- * hairline and two derived figures (cache hit rate, cost). Shares are all of the
- * session total, so they sum to 100%.
+ * hairline and two derived figures (cache hit rate, cost). The rows carry no
+ * percentages: the partition is shown by the Total itself.
  *
  * WHAT IT READS — the complete surface, verifiable by reading this file:
  *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile
@@ -362,9 +362,9 @@ function Chip() {
       jsx(PopoverContent, {
         align: 'end',
         // w-auto, NOT a pinned width: the popover variant ships `w-72` (288px) while
-        // the panel is `w-80` (320px) — pinning the popover clipped the share column
-        // and the longest figures. `cn` is tailwind-merge, so this overrides the
-        // variant's width and lets the panel set it.
+        // the panel is `w-80` (320px) — pinning the popover clipped the longest
+        // figures. `cn` is tailwind-merge, so this overrides the variant's width and
+        // lets the panel set it.
         className: 'w-auto border-(--ui-stroke-secondary) p-0',
         side: 'top',
         sideOffset: 6,
@@ -378,35 +378,24 @@ function Chip() {
 
 /**
  * The click panel, built to match the built-in Context Usage popover: same
- * paddings, same hairline-segment bar, same `justify-between` rows with
- * tabular-nums on the right.
+ * paddings, same `justify-between` rows with tabular-nums on the right (label
+ * muted, figure full contrast), a hairline before the derived figures.
  */
 function TokenPanel({ stats }) {
   const { base, grown, rowState, streamed, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
-  const share = value => (total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '—')
-  // Children read as a share of their own group (In / Out), which is the natural
-  // reading of an indented row — the group row carries the session-wide share.
-  const pct = (value, parent) => (parent > 0 ? `${((value / parent) * 100).toFixed(1)}%` : '—')
   const estimating = grown > 0 || streamed > 0
 
-  /** One label/value row; `indent` marks a bucket that belongs to the row above. */
-  const row = (key, label, value, suffix, options = {}) =>
+  /** One label/value row. */
+  const row = (key, label, value, options = {}) =>
     jsxs('li', {
-      className: cn('flex items-baseline justify-between gap-2', options.indent ? 'pl-3' : ''),
+      className: 'flex items-baseline justify-between gap-2',
       children: [
         jsx('span', { className: 'truncate text-muted-foreground', children: label }),
-        jsxs('span', {
-          className: 'flex shrink-0 items-baseline gap-2',
-          children: [
-            jsx('span', {
-              className: cn('tabular-nums text-foreground', options.strong && 'font-medium'),
-              children: value
-            }),
-            // Fixed-width share column so the figures line up down the panel.
-            jsx('span', { className: 'w-14 text-right tabular-nums text-muted-foreground', children: suffix ?? '' })
-          ]
+        jsx('span', {
+          className: cn('tabular-nums text-foreground', options.strong && 'font-medium'),
+          children: value
         })
       ]
     }, key)
@@ -425,26 +414,25 @@ function TokenPanel({ stats }) {
             children: 'live only — no stored row for this session'
           })
         : null,
-      // Two groups: the prompt side (input + both cache buckets) and the output
-      // side, each with its subtotal. The bar that used to sit here was one solid
-      // segment at these proportions (cache read is ~99.6% of everything), so the
-      // share column replaces it — a chart that shows one colour is not a chart.
-      // Three peers that PARTITION the session total:
+      // Three peers that PARTITION the session total — the rows add up to the
+      // Total line beneath them:
       //   cache hits (reads + writes) + cache misses (uncached input) + output
       // NOTE the hit row includes cache WRITES, which are misses being written —
       // they are priced as writes (above input) and only become hits on the next
       // call, so "hit" here means "served from / placed into the cache".
-      // One denominator (the session total) for every row, so the shares add to
-      // 100% and there is no untitled second scale to misread.
+      // A stacked bar sat here once and a percentage column after it; both were
+      // removed on request — at these proportions a bar is one solid colour and
+      // the percentages restated the Total. The cache ratio lives in the
+      // "Cache hit rate" line below the rule.
       jsxs('ul', { className: 'flex flex-col gap-1.5', children: [
-        row('cached', 'Cache hit', fmt(cachedInput), share(cachedInput)),
-        row('in', 'Cache miss', fmt(base?.in ?? 0), share(base?.in ?? 0)),
-        row('out', 'Output', fmt(base?.out ?? 0), share(base?.out ?? 0)),
+        row('cached', 'Cache hit', fmt(cachedInput)),
+        row('in', 'Cache miss', fmt(base?.in ?? 0)),
+        row('out', 'Output', fmt(base?.out ?? 0)),
         // The total closes the block: the three rows above add up to it, so it
         // sits under them instead of in the header. `~` marks a figure that still
         // contains an estimate (streamed text, or growth not yet written to the
-        // stored row). No share — it IS the denominator of every share above.
-        row('total', 'Total', `${estimating ? '~' : ''}${fmt(total)}`, null, { strong: true })
+        // stored row).
+        row('total', 'Total', `${estimating ? '~' : ''}${fmt(total)}`, { strong: true })
       ]}),
       // Derived metrics, deliberately below a hairline: Cache hit rate and Cost are
       // computed from the session, not measured token buckets.
