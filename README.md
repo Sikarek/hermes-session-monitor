@@ -8,7 +8,7 @@ A live token, context-window, cost and cache-hit monitor for the **Hermes Deskto
 197,238,947 tok · 99.82% · $1.78            the chip, at the right end of the status bar
 ```
 
-The status-bar figure carries the glance number; **click it** — or open the **Session monitor** tab beside SESSIONS (also listed in ⌘K) — for the same detail view:
+The status-bar figure carries the glance number; **click it** for that detail view right there, or open the **Session monitor** tab beside SESSIONS (also listed in ⌘K) to keep it on screen:
 
 ```
 Session monitor                                        ↻   the refresh button, at the top right
@@ -60,7 +60,7 @@ No build step and no backend changes. The app watches that folder, so the chip a
 
 | Action           | Where                                                                                                                  |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Chip             | Right end of the status bar — click it to reveal the detail pane |
+| Chip             | Right end of the status bar — click it for the detail box |
 | Detail pane      | **Session monitor** tab beside SESSIONS in the left sidebar (⌘K lists a toggle) |
 | Refresh          | **↻** at the top right of the pane — re-reads the stored session row now instead of waiting for the next poll |
 | Hide / show      | Right-click the status bar →**Session monitor**                                                                 |

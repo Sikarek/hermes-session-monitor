@@ -674,27 +674,43 @@ if (!live.failures.length) {
     if (pane.title !== 'Session monitor') throw new Error(`pane title is "${pane.title}"`)
     if (pane.data?.placement !== 'left') throw new Error(`pane placement is "${pane.data?.placement}", expected the left column`)
     if (pane.data?.dock?.pane !== 'sessions') throw new Error(`pane docks into "${pane.data?.dock?.pane}", expected the sessions zone`)
-    if (document.querySelector('[data-stub="popover-content"]')) throw new Error('a popover is back — the details belong in the pane')
+    // TWO DOORS contract: the details are reachable BOTH ways — a popover on the
+    // status-bar figure (the previous release's behaviour, for when the sidebar tab is
+    // not open) and the pane beside SESSIONS. Neither replaces the other, and each is an
+    // independent instance of the monitor, so one being closed cannot starve the other.
+    const panels = [...live.container.querySelectorAll('[data-slot="session-monitor-panel"]')]
 
-    // SECOND DOOR contract: clicking the status-bar figure reveals that same pane
-    // (contributed panes are addressed as `<pluginId>:<paneId>`), so the details are
-    // one surface with two ways in — not a second copy of the panel in a popover.
-    const chipBtn = live.container.querySelector('[data-slot="session-monitor-chip"]')
-
-    if (!chipBtn) throw new Error('the status-bar figure is missing')
-    if (chipBtn.tagName !== 'BUTTON') throw new Error(`the figure is a ${chipBtn.tagName}, so it cannot open the details`)
-
-    globalThis.__stRevealed = []
-    chipBtn.click()
-
-    if (!(globalThis.__stRevealed ?? []).includes('session-monitor:pane')) {
-      throw new Error(`clicking the figure revealed ${JSON.stringify(globalThis.__stRevealed)} instead of the details pane`)
+    if (panels.length !== 2) {
+      throw new Error(`expected two detail views (the chip's popover and the sidebar pane), found ${panels.length}`)
     }
 
-    const panelEl = document.querySelector('[data-slot="session-monitor-panel"]')
+    const popover = live.container.querySelector('[data-stub="popover-content"]')
 
-    if (!panelEl) throw new Error('the pane does not render the panel')
-    if (!/w-64/.test(panelEl.className)) throw new Error(`panel width class missing ("${panelEl.className}")`)
+    if (!popover) throw new Error('clicking the figure would show nothing: no popover is contributed')
+    if (!popover.querySelector('[data-slot="session-monitor-panel"]')) {
+      throw new Error("the chip's popover does not render the panel")
+    }
+
+    const chipBtn = live.container.querySelector('[data-slot="session-monitor-chip"]')
+
+    if (!chipBtn || chipBtn.tagName !== 'BUTTON') {
+      throw new Error(`the figure must be the popover's trigger — got ${chipBtn ? chipBtn.tagName : 'nothing'}`)
+    }
+
+    // The two instances must agree: same sources, same arithmetic, no drift.
+    const panelTotals = panels.map(el => (el.textContent ?? '').match(/Total~?([\d,]+)/)?.[1] ?? '?')
+
+    if (panelTotals[0] !== panelTotals[1]) {
+      throw new Error(`the popover and the pane disagree: ${panelTotals.join(' vs ')}`)
+    }
+
+    if (!/w-64/.test(panels[0].className)) {
+      throw new Error(`panel width class missing ("${panels[0].className}")`)
+    }
+
+    // The assertions below read the pane (the persistent view): panels[0] is the
+    // popover's, panels[1] the sidebar pane's.
+    const panelEl = panels[1]
 
     // CONTRAST CONTRACT: figures are highlighted, labels are quiet — the app's own
     // Context usage convention (label: muted, value: foreground). So every numeric
