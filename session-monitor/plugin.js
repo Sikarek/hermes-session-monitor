@@ -38,7 +38,13 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
- * PANEL — titled "Session monitor" with a refresh button (re-reads the stored row
+ * WHERE IT RENDERS — two contributions: a status-bar READOUT (the glance figure, no
+ * click target) and a SIDEBAR PANE (`area: 'panes'`, a tab beside SESSIONS, toggled
+ * from the zone menu or the command palette) carrying the detail view. Each view runs
+ * the panel's own instance, because a pane's tab unmounts with the tab and a
+ * status-bar item can be hidden: neither may depend on the other being mounted.
+ *
+ * PANE — titled "Session monitor" with a refresh button (re-reads the stored row
  * on click): the CONTEXT window (used / max + a fill bar)
  * above the token section, then three rows that PARTITION the session total
  * (Cache hit = cache read + cache write, Cache miss = uncached input, Output =
@@ -65,7 +71,7 @@
  */
 
 import { Component } from 'react'
-import { Button, cn, icons, Popover, PopoverContent, PopoverTrigger, host, useValue } from '@hermes/plugin-sdk'
+import { Button, cn, icons, host, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -144,7 +150,13 @@ const tokenCount = row =>
 const matches = (row, storedId) =>
   Boolean(storedId) && (row?.id === storedId || row?.resolved_id === storedId)
 
-function Chip() {
+/**
+ * The monitor itself: subscriptions, the poll, the context pulls and every figure.
+ * A hook so both views — the status-bar readout and the sidebar pane — can run it;
+ * each mount owns its instance, and each stays correct on its own (the pane is only
+ * mounted while its tab is showing, so it cannot rely on the chip's instance).
+ */
+function useMonitor() {
   const storedId = useValue(host.state.focusedStoredSessionId)
   const runtimeId = useValue(host.state.focusedSessionId)
   const profile = useValue(host.state.focusedSessionProfile)
@@ -566,62 +578,60 @@ function Chip() {
   const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
-  const trigger = jsx('button', {
-    type: 'button',
-    className:
-      'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-    children: jsx('span', {
-      className: 'inline-flex items-center',
-      children: [
-        jsx('span', { children: 'Σ' }),
-        // Fixed-width estimate slot: the marker appearing and disappearing used
-        // to change the chip's width and shove the neighbouring status items.
-        jsx('span', {
-          className: 'inline-block w-[0.5em] text-center',
-          children: ready && streamed > 0 ? '~' : ''
-        }),
-        jsx('span', {
-          children: ready
-            ? `${fmt(chipTotal)} tok${costLabel ? ' · ' + costLabel : ''}${hitLabel ? ' · ' + hitLabel : ''}`
-            : // Before any value exists: a placeholder, never a zero that climbs.
-              '… tok'
-        })
-      ]
-    })
-  })
+  return {
+    base,
+    chipTotal,
+    ctx,
+    grown,
+    onPull: pullContext,
+    onRefresh: refresh,
+    ready,
+    refreshing,
+    rowState,
+    streamed,
+    subagentCost,
+    subagents,
+    subagentTokens,
+    total
+  }
+}
 
-  return jsxs(Popover, {
+/**
+ * The status-bar readout: the glance figure, nothing more. The detail view lives in
+ * the sidebar pane (`MonitorPane`), which is where a popover used to open.
+ */
+function Chip() {
+  const { base, chipTotal, onRefresh, ready, refreshing, rowState, streamed, subagentCost, subagentTokens } = useMonitor()
+
+  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
+  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
+  const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
+
+  return jsx('span', {
+    'data-slot': 'session-monitor-chip',
+    className:
+      'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums',
     children: [
-      // No hover tooltip: the click panel carries the detail, and the app's own
-      // built-in items keep hover chrome minimal too.
-      jsx(PopoverTrigger, { asChild: true, children: trigger }),
-      jsx(PopoverContent, {
-        align: 'end',
-        // w-auto, NOT a pinned width: the popover variant ships `w-72` (288px) while
-        // the panel sets its own — pinning the popover clipped the longest figures.
-        // `cn` is tailwind-merge, so this overrides the variant's width.
-        className: 'w-auto border-(--ui-stroke-secondary) p-0',
-        side: 'top',
-        sideOffset: 6,
-        children: jsx(TokenPanel, {
-          stats: {
-            base,
-            ctx,
-            grown,
-            onPull: pullContext,
-            onRefresh: refresh,
-            refreshing,
-            rowState,
-            streamed,
-            subagentCost,
-            subagents,
-            subagentTokens,
-            total
-          }
-        })
+      jsx('span', { children: 'Σ' }),
+      // Fixed-width estimate slot: the marker appearing and disappearing used
+      // to change the chip's width and shove the neighbouring status items.
+      jsx('span', {
+        className: 'inline-block w-[0.5em] text-center',
+        children: ready && streamed > 0 ? '~' : ''
+      }),
+      jsx('span', {
+        children: ready
+          ? `${fmt(chipTotal)} tok${costLabel ? ' · ' + costLabel : ''}${hitLabel ? ' · ' + hitLabel : ''}`
+          : // Before any value exists: a placeholder, never a zero that climbs.
+            '… tok'
       })
     ]
   })
+}
+
+/** The sidebar pane: the same figures in full, plus the two refresh doors. */
+function MonitorPane() {
+  return jsx(TokenPanel, { stats: useMonitor() })
 }
 
 /**
@@ -833,6 +843,21 @@ export default {
         toggleLabel: 'Session monitor',
         render: () => jsx(ChipGuard, { children: jsx(Chip, {}) })
       }
+    })
+    ctx.register({
+      id: 'pane',
+      area: 'panes',
+      title: 'Session monitor',
+      // A tab beside SESSIONS in the left sidebar: the detail view lives where the
+      // session list does, and the zone menu / command palette toggles it (hideOnly).
+      data: {
+        collapsible: true,
+        dock: { pane: 'sessions', pos: 'center' },
+        hideOnly: true,
+        placement: 'left',
+        width: '260px'
+      },
+      render: () => jsx(ChipGuard, { children: jsx(MonitorPane, {}) })
     })
   }
 }

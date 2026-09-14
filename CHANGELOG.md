@@ -35,6 +35,12 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ### Changed
 
+- **The detail view moved into the sidebar**: it was a popover on the status-bar chip and is
+  now a pane (`area: 'panes'`) docked as a tab beside SESSIONS, toggled from the zone menu or
+  the command palette. The chip stays as the glance figure but is no longer a click target.
+  Each view runs the panel's own instance — a pane's tab unmounts with the tab and a
+  status-bar item can be hidden, so neither may depend on the other being mounted.
+
 - **The counted quantity** — from `input + output` to Hermes' own definition,
   `input + output + cache_read + cache_write`, matching `CanonicalUsage.total_tokens`
   and `hermes insights`.

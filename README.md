@@ -2,13 +2,13 @@
 
 **v1.0.0** · MIT · macOS · Linux · Windows · [Changelog](CHANGELOG.md)
 
-A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** status bar. It reports how many tokens the focused session has actually processed, how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
+A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** app: a figure in the status bar, and the full breakdown in a **sidebar pane** beside your session list. It reports how many tokens the focused session has actually processed (its subagents included), how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
 ```
 Σ 197,238,947 tok · $1.78 · 99.82%            the chip, at the right end of the status bar
 ```
 
-Click the chip for the breakdown:
+The status-bar figure is a readout; the detail view is a pane in the left sidebar (**SESSIONS | Session monitor**, also listed in ⌘K):
 
 ```
 Session monitor                                        ↻   the refresh button, at the top right
@@ -60,9 +60,9 @@ No build step and no backend changes. The app watches that folder, so the chip a
 
 | Action           | Where                                                                                                                  |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Chip             | Right end of the status bar                                                                                            |
-| Detail panel     | Click the chip                                                                                                         |
-| Refresh          | **↻** at the top right of the panel — re-reads the stored session row now instead of waiting for the next poll |
+| Chip             | Right end of the status bar — a readout, not a button |
+| Detail pane      | **Session monitor** tab beside SESSIONS in the left sidebar (⌘K lists a toggle) |
+| Refresh          | **↻** at the top right of the pane — re-reads the stored session row now instead of waiting for the next poll |
 | Hide / show      | Right-click the status bar →**Session monitor**                                                                 |
 | Disable entirely | Settings → Skills → Plugins →*Session Monitor* → Desktop switch                                                  |
 

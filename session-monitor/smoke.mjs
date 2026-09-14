@@ -129,6 +129,7 @@ globalThis[${ADD_ROW_EXTRA}] = extra => {
   rowExtra = extra
 }
 const noop = () => null
+const HANDLERS = {}
 const EVENTS = (globalThis[${key}] = {})
 
 export const host = {
@@ -143,7 +144,22 @@ export const host = {
     model: modelAtom
   },
   notify: () => 'toast', notifyError: () => 'toast', navigate: () => {},
-  onEvent: (type, handler) => { EVENTS[type] = handler; return () => delete EVENTS[type] },
+  // MANY handlers per event, like the app: the built-in status items and every view
+  // of this plugin share these streams. Storing one handler per type made the newest
+  // subscriber steal the events from the older one — the chip went deaf as soon as
+  // the sidebar pane mounted. EVENTS[type] stays a callable so tests fire normally.
+  onEvent: (type, handler) => {
+    const handlers = (HANDLERS[type] = HANDLERS[type] ?? [])
+
+    handlers.push(handler)
+    EVENTS[type] = payload => handlers.slice().forEach(fn => fn(payload))
+
+    return () => {
+      const at = handlers.indexOf(handler)
+
+      if (at >= 0) handlers.splice(at, 1)
+    }
+  },
   request: async (method, params) => {
     if (method === 'session.context_breakdown') {
       globalThis[${BREAKDOWN_CALLS}] = (globalThis[${BREAKDOWN_CALLS}] ?? 0) + 1
@@ -231,6 +247,7 @@ const WINDOWS = {
   i: { cacheRead: 5000, key: 'I', runtime: 'rtI', stored: 'storedI' }, // context pull: no push payloads
   j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' }, // a plugin mounted mid-session
   k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' }, // pull retry + session change
+  m: { cacheRead: 2000, key: 'M', runtime: 'rtM', stored: 'storedM' }, // pane without the chip
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -389,7 +406,9 @@ async function mount(modulePath) {
 
     if (registered.length === 0) throw new Error('register() contributed nothing')
 
-    nodes = registered
+    const mounted = globalThis.__stPaneOnly ? registered.filter(c => c.area === 'panes') : registered
+
+    nodes = mounted
       .map(contribution => (contribution.render ? contribution.render() : contribution.data?.render?.() ?? null))
       .filter(Boolean)
 
@@ -403,7 +422,7 @@ async function mount(modulePath) {
 
   console.error = originalError
 
-  return { boundaryCaught, chatter, container: rootEl, failures, markup, nodes }
+  return { boundaryCaught, chatter, container: rootEl, failures, markup, nodes, registered }
 }
 
 // ── phase 1: the real plugin
@@ -531,7 +550,7 @@ if (!live.failures.length) {
     // REFRESH CONTRACT: the panel header carries a refresh button, and pressing it
     // re-reads the stored session row immediately instead of waiting for the poll.
     // Self-contained lookup: this block runs before `panelEl` is declared below.
-    const refreshPanel = document.querySelector('[data-slot="session-monitor-panel"]')
+    const refreshPanel = live.container.querySelector('[data-slot="session-monitor-panel"]')
     const refreshBtn = refreshPanel?.querySelector('button')
     const beforeCalls = globalThis.__stListCalls_A ?? 0
 
@@ -613,8 +632,11 @@ if (!live.failures.length) {
     // The click panel: same numbers, panel layout. Assert its rows exist in the
     // contribution's element tree (the popover only mounts on click).
     // The stub Popovers render their children, so the panel is in the DOM.
-    const panel = document.body.textContent ?? ''
-    const expectedTotal = stored.toLocaleString('en-US')
+    // Scope to THIS window: several mounts live in the document (the guarded copy and
+    // the isolation windows), so a document-wide lookup reads someone else's pane —
+    // the containment copy's, which never receives events and shows "—".
+    const thisPanel = live.container.querySelector('[data-slot="session-monitor-panel"]')
+    const panel = thisPanel?.textContent ?? ''
 
     for (const needle of ['Session monitor', 'Context', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
       if (!panel.includes(needle)) throw new Error(`panel is missing "${needle}" — got: ${panel.slice(0, 200)}`)
@@ -630,21 +652,22 @@ if (!live.failures.length) {
       throw new Error(`panel order wrong: title@${iTitle} Output@${iOut} Total@${iTotal}`)
     }
 
-    // WIDTH CONTRACT: the popover must not pin a width while the panel declares its
-    // own. Pinning w-72 around a w-80 panel clipped 32px off the right edge — the
-    // exact "box looks broken" regression.
-    const popoverEl = document.querySelector('[data-stub="popover-content"]')
+    // SURFACE CONTRACT: the detail view is a SIDEBAR PANE, not a popover — it used to
+    // be a click popover on the chip, and moving it into the sessions column is the
+    // whole point of the pane contribution. These assertions fail if the pane is
+    // dropped or re-docked elsewhere, or if the panel is not where it belongs.
+    const pane = (live.registered ?? []).find(c => c.area === 'panes')
+
+    if (!pane) throw new Error('no sidebar pane was contributed — the detail view has nowhere to live')
+    if (pane.title !== 'Session monitor') throw new Error(`pane title is "${pane.title}"`)
+    if (pane.data?.placement !== 'left') throw new Error(`pane placement is "${pane.data?.placement}", expected the left column`)
+    if (pane.data?.dock?.pane !== 'sessions') throw new Error(`pane docks into "${pane.data?.dock?.pane}", expected the sessions zone`)
+    if (document.querySelector('[data-stub="popover-content"]')) throw new Error('a popover is back — the details belong in the pane')
+
     const panelEl = document.querySelector('[data-slot="session-monitor-panel"]')
 
-    if (!popoverEl || !panelEl) throw new Error('could not locate the popover or the panel element')
-
-    if (!/w-auto/.test(popoverEl.className)) {
-      throw new Error(`popover pins a width ("${popoverEl.className}") — that clips the panel`)
-    }
-
-    if (!/w-64/.test(panelEl.className)) {
-      throw new Error(`panel width class missing ("${panelEl.className}")`)
-    }
+    if (!panelEl) throw new Error('the pane does not render the panel')
+    if (!/w-64/.test(panelEl.className)) throw new Error(`panel width class missing ("${panelEl.className}")`)
 
     // CONTRAST CONTRACT: figures are highlighted, labels are quiet — the app's own
     // Context usage convention (label: muted, value: foreground). So every numeric
@@ -683,7 +706,13 @@ if (!live.failures.length) {
     }
     if (panel.includes('Input (uncached)')) throw new Error("old flat label 'Input (uncached)' is back")
 
-    if (!panel.includes(expectedTotal)) throw new Error(`panel total missing (${expectedTotal}) — got: ${panel.slice(0, 160)}`)
+    const chipNow = document.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? ''
+    const chipFigure = Number((chipNow.match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+    const panelTotal = Number((panel.match(/Total~?([\d,]+)/)?.[1] ?? '0').replaceAll(',', ''))
+
+    if (!chipFigure || panelTotal !== chipFigure) {
+      throw new Error(`the pane and the chip disagree: chip ${chipFigure.toLocaleString('en-US')} vs pane Total ${panelTotal.toLocaleString('en-US')}`)
+    }
 
     // Cost figure shown bare (the provenance parenthetical was removed on request).
     // Cost is printed at 2 decimals, like the chip.
@@ -983,6 +1012,29 @@ edgeAssert('the Subagents row carries their cost', panelL().includes('$0.07'), `
 edgeAssert('the chip cost is combined', chipL.includes('$1.44'), `expected $1.44 (1.3718 session + 0.07 subagents) in "${chipL.trim().slice(0, 60)}"`)
 edgeAssert('the unrelated session is not counted', !chipL.includes('999,999') && !panelL().includes('999,000') && !chipL.includes('$11.'), 'a session with no parent link leaked in')
 edgeAssert('the grandchild is counted', panelL().includes('Subagents3,500'), 'only direct children were summed')
+
+// M — THE PANE WITHOUT THE CHIP: a status-bar item can be hidden from the bar's menu, so
+// the pane must not depend on the chip's instance for its numbers. Each view runs its own
+// (the details are a pane, the glance figure is a bar item) — this mounts the pane alone
+// and requires it to adopt a live tick.
+globalThis.__stPaneOnly = true
+
+const winM = await mount(toModule(code, 'plugin-winM.mjs', stubPathFor(WINDOWS.m)))
+const paneM = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
+const rowM = 1000 + 500 + WINDOWS.m.cacheRead
+
+globalThis.__stPaneOnly = false
+
+globalThis['__stEvents_M']['session.usage']({ payload: { usage: { total: 5000 } }, session_id: WINDOWS.m.runtime, type: 'session.usage' })
+await wait(200)
+globalThis['__stEvents_M']['session.usage']({ payload: { usage: { total: 9000 } }, session_id: WINDOWS.m.runtime, type: 'session.usage' })
+await wait(250)
+
+edgeAssert(
+  'the pane counts without the chip',
+  paneM().includes(String(rowM + 4000)) || paneM().includes((rowM + 4000).toLocaleString('en-US')),
+  `expected ${(rowM + 4000).toLocaleString('en-US')} in "${paneM().slice(0, 100)}"`
+)
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
