@@ -712,6 +712,21 @@ if (!live.failures.length) {
     // popover's, panels[1] the sidebar pane's.
     const panelEl = panels[1]
 
+    // PRECISION contract: every cost is printed with four decimals, in the panel and in
+    // the chip (a 2-decimal figure reads like a rounded bill; four show the stored value).
+    const panelCost = (panelEl.textContent ?? '').match(/Cost\$(\d+\.\d+)/)?.[1] ?? ''
+
+    if (!/^\d+\.\d{4}$/.test(panelCost)) {
+      throw new Error(`the panel's cost should carry four decimals — got "$${panelCost || 'nothing'}"`)
+    }
+
+    const chipCost = (live.container.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? '').match(/\$(\d+\.\d+)/)?.[1] ?? ''
+
+    if (!/^\d+\.\d{4}$/.test(chipCost)) {
+      throw new Error(`the chip's cost should carry four decimals — got "$${chipCost || 'nothing'}"`)
+    }
+
+
     // CONTRAST CONTRACT: figures are highlighted, labels are quiet — the app's own
     // Context usage convention (label: muted, value: foreground). So every numeric
     // element must carry `text-foreground`, no label may, and the title is the only
@@ -758,8 +773,10 @@ if (!live.failures.length) {
     }
 
     // Cost figure shown bare (the provenance parenthetical was removed on request).
-    // Cost is printed at 2 decimals, like the chip.
-    if (!panel.includes('$1.37')) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
+    // Cost is printed at 4 decimals, in the panel and in the chip. This window has no
+    // subagents, so the panel's cost is the session row's own 1.3718 (window L covers the
+    // combined figure below).
+    if (!panel.includes('$1.3718')) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
 
     if (panel.includes('(estimated') || panel.includes('provider_models_api')) {
       throw new Error('the cost parenthetical is back — it was removed on purpose')
@@ -1051,8 +1068,8 @@ const kidsL = 2000 + 1000 + 500 // two subagents + one grandchild: 3,500
 
 edgeAssert('the chip counts the subagents', chipL.includes((rowL + kidsL).toLocaleString('en-US')), `expected ${(rowL + kidsL).toLocaleString('en-US')} in "${chipL.trim().slice(0, 60)}"`)
 edgeAssert('the panel has a Subagents row', panelL().includes('Subagents3,500'), `got "${panelL().slice(0, 120)}"`)
-edgeAssert('the Subagents row carries their cost', panelL().includes('$0.07'), `got "${panelL().slice(0, 120)}"`)
-edgeAssert('the chip cost is combined', chipL.includes('$1.44'), `expected $1.44 (1.3718 session + 0.07 subagents) in "${chipL.trim().slice(0, 60)}"`)
+edgeAssert('the Subagents row carries their cost', panelL().includes('$0.0700'), `got "${panelL().slice(0, 120)}"`)
+edgeAssert('the chip cost is combined', chipL.includes('$1.4418'), `expected $1.4418 (1.3718 session + 0.07 subagents) in "${chipL.trim().slice(0, 60)}"`)
 edgeAssert('the unrelated session is not counted', !chipL.includes('999,999') && !panelL().includes('999,000') && !chipL.includes('$11.'), 'a session with no parent link leaked in')
 edgeAssert('the grandchild is counted', panelL().includes('Subagents3,500'), 'only direct children were summed')
 

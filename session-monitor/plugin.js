@@ -575,10 +575,6 @@ function useMonitor() {
   // both cache buckets (`CanonicalUsage.prompt_tokens`).
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
 
-  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
-  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
-  const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
-
   return {
     base,
     chipTotal,
@@ -598,15 +594,16 @@ function useMonitor() {
 }
 
 /**
- * The status-bar readout: the glance figure, nothing more. The detail view lives in
- * the sidebar pane (`MonitorPane`), which is where a popover used to open.
+ * The status-bar figure: the glance number, and — clicked — the detail box itself, so the
+ * full view is reachable without opening the sidebar tab. The same panel also lives in the
+ * pane (`MonitorPane`); both read their own instance of `useMonitor`.
  */
 function Chip() {
   const vm = useMonitor()
   const { base, chipTotal, ready, streamed, subagentCost, subagentTokens } = vm
 
   const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
-  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
+  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(4)}` : ''
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
   const trigger = jsx('button', {
@@ -790,7 +787,7 @@ function TokenPanel({ stats }) {
         // Subagent sessions run under their own rows, so they sit OUTSIDE the partition
         // above: shown only when this session has spawned any.
         subagents && subagentTokens > 0
-          ? row('subagents', 'Subagents', `${fmt(subagentTokens)} · $${subagentCost.toFixed(2)}`)
+          ? row('subagents', 'Subagents', `${fmt(subagentTokens)} · $${subagentCost.toFixed(4)}`)
           : null
       ]}),
       // Derived metrics, deliberately below a hairline: Cache hit rate and Cost are
@@ -810,7 +807,7 @@ function TokenPanel({ stats }) {
             jsx('span', {
               className: 'tabular-nums text-foreground',
               children:
-                mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : '—'
+                mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(4)}` : '—'
             })
           ]})
         ]

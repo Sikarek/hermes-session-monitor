@@ -5,7 +5,7 @@
 A live token, context-window, cost and cache-hit monitor for the **Hermes Desktop** app: a figure in the status bar, and the full breakdown in a **sidebar pane** beside your session list. It reports how many tokens the focused session has actually processed (its subagents included), how they break down, how full its context window is, and what they cost — per session, restart-safe, with every figure traceable to a source.
 
 ```
-197,238,947 tok · 99.82% · $1.78            the chip, at the right end of the status bar
+202,983,982 tok · 99.82% · $2.1600          the chip, at the right end of the status bar
 ```
 
 The status-bar figure carries the glance number; **click it** for that detail view right there, or open the **Session monitor** tab beside SESSIONS (also listed in ⌘K) to keep it on screen:
@@ -18,10 +18,10 @@ Cache hit                                    196,470,400   prompt tokens served 
 Cache miss                                       353,194   uncached input
 Output                                           415,353   everything the model generated, reasoning included
 Total                                        197,238,947   this session's own tokens — the three rows above, added up
-Subagents                              5,745,035 · $0.38   the sessions it spawned, and their own subagents
+Subagents                              5,745,035 · $0.3800   the sessions it spawned, and their own subagents
 ────────────────────────────────────────────────────────
 Cache hit rate                                    99.82%   two decimals; Hermes' own item rounds to a whole percent
-Cost                                               $2.16   this session + its subagents, from published rates
+Cost                                              $2.1600   this session + its subagents, from published rates
 ```
 
 ## What it shows

@@ -35,6 +35,9 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ### Changed
 
+- **Costs print four decimals** in the chip and in the panel (`$2.1600`), showing the stored
+  value rather than a rounded figure; the cache hit rate stays at two.
+
 - **The status-bar figure opens the details in place**: clicking it shows the detail box as a
   popover at the figure, so the figures are reachable without opening the sidebar tab. The
   pane beside SESSIONS carries the same view for when it should stay on screen; the two are
