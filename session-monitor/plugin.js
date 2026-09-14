@@ -87,12 +87,12 @@ const POLL_MS = 15_000
  * `$focusedRuntimeId` its `tileMatches`), and clicking a pane's tab or the sidebar moves the tile
  * focus without changing the conversation in front of you.
  *
- * The STORED id must come from the same session as the runtime id, which is why the row read
- * resolves and adopts it: pairing the main area's runtime id with the FOCUSED stored id (as an
- * earlier attempt did) matched the wrong row and painted another session's figures.
- * Set false to key on the focused tile instead.
+ * Set false (the default) to key on the focused session. `activeSessionId` proved stale in the
+ * app — leading with it pinned the context figure to one session for every session, twice, so the
+ * focused ids are what the data actually follows. The knob stays for a future desktop whose main
+ * area reports a live id.
  */
-const PREFER_ACTIVE_CHAT = true
+const PREFER_ACTIVE_CHAT = false
 
 /**
  * Tokens and cost of every session spawned under `rootId` — subagents (and their
@@ -1036,9 +1036,11 @@ export default {
       // session list does, and the zone menu / command palette toggles it (hideOnly).
       data: {
         collapsible: true,
-        dock: { pane: 'sessions', pos: 'center' },
         hideOnly: true,
-        placement: 'left',
+        // Its OWN zone on the right, deliberately NOT a tab in the sessions strip: docked there,
+        // selecting our tab appeared to move the sessions pane's selection, and the readout
+        // followed the selection to another session instead of describing the chat on screen.
+        placement: 'right',
         width: '260px'
       },
       render: () => jsx(ChipGuard, { children: jsx(MonitorPane, {}) })

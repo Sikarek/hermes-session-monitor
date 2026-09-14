@@ -697,8 +697,11 @@ if (!live.failures.length) {
 
     if (!pane) throw new Error('no sidebar pane was contributed — the detail view has nowhere to live')
     if (pane.title !== 'Session monitor') throw new Error(`pane title is "${pane.title}"`)
-    if (pane.data?.placement !== 'left') throw new Error(`pane placement is "${pane.data?.placement}", expected the left column`)
-    if (pane.data?.dock?.pane !== 'sessions') throw new Error(`pane docks into "${pane.data?.dock?.pane}", expected the sessions zone`)
+    // Its OWN zone, NOT the sessions strip: selecting a tab there appeared to move the sessions
+    // pane's selection, and the readout followed the selection to another session. This assertion
+    // is what keeps the pane out of that strip.
+    if (pane.data?.placement !== 'right') throw new Error(`pane placement is "${pane.data?.placement}", expected its own zone on the right`)
+    if (pane.data?.dock) throw new Error(`the pane is docked into "${pane.data.dock.pane}" — it must not share the sessions strip`)
     // TWO DOORS contract: the details are reachable BOTH ways — a popover on the
     // status-bar figure (the previous release's behaviour, for when the sidebar tab is
     // not open) and the pane beside SESSIONS. Neither replaces the other, and each is an
