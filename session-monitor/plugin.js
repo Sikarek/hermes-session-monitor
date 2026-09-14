@@ -80,6 +80,8 @@ const ID = 'session-monitor'
 
 /** Idle poll: catches writes this process did not make (cron, subagents, another window). */
 const POLL_MS = 15_000
+/** The Overview's own refresh cadence; it does not wait for the shared poll. */
+const OVERVIEW_MS = 5_000
 
 /**
  * Which session the monitor describes: the one in the MAIN area — the chat on screen — not the
@@ -910,6 +912,8 @@ function useMonitor() {
     base,
     chipTotal,
     costLive,
+    readRecorded: () => loadRecorded(restRef.current),
+    readRows: () => void load(),
     overview,
     costShown,
     statsRuntime: runtimeId,
@@ -992,7 +996,21 @@ function Chip() {
  * the per-session deltas the tick handler records for every running session.
  */
 function OverviewPane() {
-  const { overview, streamed } = useMonitor()
+  const { overview, readRecorded, readRows, streamed } = useMonitor()
+  // Its own read loop, independent of the engine's poll: whatever a view's lifecycle does to the
+  // shared subscriptions, the Overview on screen keeps reading the rows and the backend half.
+  const reads = useRef({ readRecorded, readRows })
+
+  reads.current = { readRecorded, readRows }
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void reads.current.readRows?.()
+      void reads.current.readRecorded?.()
+    }, OVERVIEW_MS)
+
+    return () => clearInterval(timer)
+  }, [])
   const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, requests: 0, sessions: 0, tokens: 0 }
   // The streamed text of the session in front of you is not in any row and not yet in a tick, so
   // it is added here: without it the totals move once per completed call, and with it they climb
