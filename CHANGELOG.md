@@ -67,6 +67,12 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 - **An idle window could inherit a busy session's numbers** — strict per-window
   attribution (runtime id or stored id only) replaced the fused
   `host.state.focusedUsage` atom and the "accept unknown ids while busy" fallback.
+- **A manual refresh could stop the live counter** — the value the live counter is
+  measured against was re-snapshotted on *every* row read, so each refresh (and each
+  15-second poll) discarded the growth counted so far, and the monotonic display then
+  held its previous value until new tokens re-earned the discarded amount. The anchor
+  now moves only when the stored row itself advances: a turn ending is what hands the
+  live tokens over to the row, and that hand-over is not counted twice.
 - **The counter could freeze after a resume** — a resumed session runs under a new
   runtime id while the window may still hold the previous one, so every live tick
   was rejected until the window's own state refreshed by hand (the "it only updates

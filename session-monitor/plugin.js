@@ -14,8 +14,10 @@
  *
  *  · COMPLETED CALLS — `session.usage` events **attributed strictly** to this
  *    window's focused session (runtime id, stored id, or the runtime id learned
- *    from that session's own `session.info` — the resume case), minus the value
- *    captured when the base was read. The fused `host.state.focusedUsage` atom is NOT used:
+ *    from that session's own `session.info` — the resume case), measured against an
+ *    anchor that advances ONLY when the stored row itself does: a row advance means
+ *    the tokens counted live are now persisted, so the live term restarts from the
+ *    row. Ordinary polls and manual refreshes leave the term untouched. The fused `host.state.focusedUsage` atom is NOT used:
  *    the app merges rather than replaces that store, so an idle window could
  *    inherit a busy session's numbers.
  *
@@ -114,7 +116,8 @@ function Chip() {
   const [, repaint] = useState(0)
 
   const live = useRef(0) // completed-call counters for the focused runtime session
-  const liveAtFetch = useRef(0) // …at the moment the base was read
+  const liveAnchor = useRef(0) // counter value the current base row already includes
+  const rowTotalRef = useRef(0) // stored total at the last read — detects a row advance
   const chars = useRef(0) // characters streamed since the last accounted call
   const chunks = useRef(0) // chunks since the last accounted call
   const lastChunkAt = useRef(0) // arrival time of the previous chunk
@@ -260,7 +263,7 @@ function Chip() {
     total => {
       // `total` is the runtime session's CUMULATIVE counter (process-local, so it
       // restarts at zero on resume); the growth the stored row is missing is
-      // therefore `total - liveAtFetch`, computed where the total is rendered.
+      // therefore `total - liveAnchor`, computed where the total is rendered.
       // NOTE: this handler once carried a tokens-per-second estimate that
       // referenced a variable nothing declared — the throw was swallowed by the
       // app's listener wrapper, so the chip silently stopped adopting real
@@ -274,7 +277,6 @@ function Chip() {
 
   const load = useCallback(async () => {
     if (!storedId) {
-      liveAtFetch.current = live.current
       setBase(null)
       setRowState('unavailable')
       return
@@ -287,9 +289,18 @@ function Chip() {
       const page = await host.listPersistedSessions(null, { limit: 500, profile })
       const row = (page?.sessions ?? []).find(candidate => matches(candidate, storedId))
 
-      liveAtFetch.current = liveNow
-
       if (row) {
+        const rowTotal = tokenCount(row)
+
+        // The anchor — the counter value the stored row already includes — moves
+        // ONLY when the row itself advances (a turn ended and was written). Moving
+        // it on every read is what made a manual refresh (and the 15 s poll) discard
+        // the live term the display was carrying: the number then sat still at its
+        // previous value until new growth re-earned the discarded amount.
+        if (rowTotal > rowTotalRef.current) liveAnchor.current = liveNow
+
+        rowTotalRef.current = rowTotal
+
         debug('row', { rowTotal: tokenCount(row), storedId })
         setRowState('ok')
         setBase({
@@ -318,14 +329,15 @@ function Chip() {
           costStatus: row.cost_status ?? '',
           actualCost: n(row.actual_cost_usd),
           out: n(row.output_tokens),
-          total: tokenCount(row)
+          total: rowTotal
         })
         return
       }
 
       setRowState('unavailable')
     } catch (error) {
-      liveAtFetch.current = liveNow
+      // A failed read must not touch the anchor either: the live term keeps the
+      // tokens it has already counted.
       setRowState('unavailable')
     }
   }, [profile, storedId])
@@ -349,11 +361,13 @@ function Chip() {
   // Session switch: every term belongs to the previous session.
   useEffect(() => {
     live.current = 0
-    liveAtFetch.current = 0
+    liveAnchor.current = 0
     chars.current = 0
     chunks.current = 0
     best.current = 0
     aliasRef.current = null
+    liveAnchor.current = 0
+    rowTotalRef.current = 0
     setBase(null)
     setCtx(null)
     setRowState('pending')
@@ -365,7 +379,8 @@ function Chip() {
   // and the live term would freeze. Re-anchor.
   useEffect(() => {
     live.current = 0
-    liveAtFetch.current = 0
+    liveAnchor.current = 0
+    rowTotalRef.current = 0
     chars.current = 0
     aliasRef.current = null
     setCtx(null)
@@ -396,7 +411,7 @@ function Chip() {
   }, [load])
 
   const baseTotal = base?.total ?? 0
-  const grown = Math.max(0, live.current - liveAtFetch.current)
+  const grown = Math.max(0, live.current - liveAnchor.current)
   const streamed = Math.floor(chars.current / CHARS_PER_TOKEN)
   const computed = baseTotal + grown + streamed
 

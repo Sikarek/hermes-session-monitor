@@ -79,6 +79,7 @@ The total is assembled from three sources, in this order:
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
 - **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those same two event payloads, so it shows `—` until the first one arrives and a `~` when the backend marks the figure as estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
+- **Reads never disturb the live term** — the anchor the live counter is measured against only advances when the *stored row* does, i.e. when a turn ends and is written. Reading the row (the 15-second poll, or the refresh button) therefore leaves the growth already counted in place; refreshing mid-turn cannot stall the counter.
 - **Resumed sessions re-attach on their own** — a resumed session runs under a new runtime id; its own `session.info` (which carries the stored id, so it is proof rather than a guess) teaches the chip that id, and the live ticks are attributed again. Without that step the counter would freeze until the window's own state refreshed.
 
 ## Cost
@@ -224,6 +225,7 @@ Edge cases — each is a situation the chip meets in the field:
 | A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no `NaN`, no `undefined` |
 | A session switch inside one window | The new session takes over; the abandoned one stops counting |
 | A model switch | The context window clears and a fresh read is triggered |
+| A manual refresh (or the 15 s poll) while the model works | The live term survives; the counter keeps climbing, and a row advance is not counted twice |
 | A deliberately broken copy of the plugin | The error boundary contains it; the app root is never reached |
 
 Every assertion above was mutation-checked: reintroducing each bug makes the suite

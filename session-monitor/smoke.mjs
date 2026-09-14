@@ -68,6 +68,8 @@ const stubFor = w => {
   const SET_MODEL = JSON.stringify(`__stSetModel_${w.key}`)
   const SET_SESSION = JSON.stringify(`__stSetSession_${w.key}`)
   const cacheWrite = String(w.cacheWrite ?? 0)
+  const ROW_EXTRA = JSON.stringify(`__stRowExtra_${w.key}`)
+  const ADD_ROW_EXTRA = JSON.stringify(`__stAddRowExtra_${w.key}`)
   const READ_THROWS = w.readThrows ? 'true' : 'false'
   const LIST_READ = w.noRowMethod
     ? 'listPersistedSessions: undefined,'
@@ -79,7 +81,7 @@ const stubFor = w => {
     return {
     limit: 1, offset: 0, total: 1,
     sessions: [{
-      cache_read_tokens: ${cacheRead}, cache_write_tokens: ${cacheWrite}, cost_source: 'provider_models_api',
+      cache_read_tokens: ${cacheRead} + rowExtra, cache_write_tokens: ${cacheWrite}, cost_source: 'provider_models_api',
       cost_status: 'estimated', estimated_cost_usd: 1.3718, id: ${stored},
       input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
       resolved_id: ${runtime}
@@ -108,6 +110,10 @@ const atom = atomImpl
 const modelAtom = atom(${JSON.stringify('deepseek/deepseek-v4.1-flash')})
 const storedAtom = atom(${stored})
 const runtimeAtom = atom(${runtime})
+let rowExtra = 0
+globalThis[${ADD_ROW_EXTRA}] = extra => {
+  rowExtra = extra
+}
 const noop = () => null
 const EVENTS = (globalThis[${key}] = {})
 
@@ -189,12 +195,13 @@ ${tail}
 const WINDOWS = {
   a: { cacheRead: 26428800, key: 'A', runtime: 'rtA', stored: 'storedA' },
   b: { cacheRead: 500000, key: 'B', runtime: 'rtB', stored: 'storedB' },
-  // Edge fixtures
+  // Edge fixtures — each one a situation from the field (see EDGE CASES below).
   c: { cacheRead: 1000, key: 'C', runtime: null, stored: null }, // a draft: no session yet
   d: { cacheRead: 1000, key: 'D', readThrows: true, runtime: 'rtD', stored: 'storedD' }, // backend hiccup
   e: { cacheRead: 1000, key: 'E', noRowMethod: true, runtime: 'rtE', stored: 'storedE' }, // older desktop build
-  f: { cacheRead: 1000, cacheWrite: 500, key: 'F', runtime: 'rtF', stored: 'storedF' }, // provider that writes cache
-  g: { cacheRead: 1000, key: 'G', noButton: true, runtime: 'rtG', stored: 'storedG' } // older SDK: no Button/icons
+  f: { cacheRead: 1000, cacheWrite: 500, key: 'F', runtime: 'rtF', stored: 'storedF' }, // provider that bills cache writes
+  g: { cacheRead: 1000, key: 'G', noButton: true, runtime: 'rtG', stored: 'storedG' }, // older SDK: no Button/icons
+  h: { cacheRead: 10000, key: 'H', runtime: 'rtH', stored: 'storedH' } // refresh/anchor accounting
 }
 
 const stubPathFor = window => {
@@ -767,6 +774,61 @@ const panelG = [...document.querySelectorAll('[data-slot="session-monitor-panel"
 edgeAssert('missing Button/icons mounts clean', winG.failures.length === 0 && !winG.boundaryCaught, winG.failures[0] ?? 'boundary hit')
 edgeAssert('missing Button/icons still shows a refresh control', Boolean(panelG?.querySelector('button')), 'no button rendered')
 edgeAssert('the fallback glyph is used', /↻/.test(panelG?.textContent ?? ''), (panelG?.textContent ?? '').slice(0, 60))
+
+// H — REFRESH ACCOUNTING (the reported bug): a manual refresh must not discard the
+// live term, and a row advance must move the anchor without counting twice. The
+// anchor — the counter value the stored row already includes — may only move when
+// the row itself advances; moving it on every read is what froze the counter.
+const winH = await mount(toModule(code, 'plugin-winH.mjs', stubPathFor(WINDOWS.h)))
+const chipH = () => Number(((winH.container?.textContent ?? '').match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+const tickH = total =>
+  globalThis['__stEvents_H']['session.usage']({
+    payload: { usage: { total } },
+    session_id: WINDOWS.h.runtime,
+    type: 'session.usage'
+  })
+const rowH = 1000 + 500 + WINDOWS.h.cacheRead // input + output + cache_read (+ 0 write)
+
+tickH(5000)
+await wait(200)
+edgeAssert('a tick is counted', chipH() === rowH + 5000, `expected ${(rowH + 5000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`)
+
+const beforeRefreshH = chipH()
+
+document.querySelector('[data-slot="session-monitor-panel"]') && [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1).querySelector('button')?.click()
+await wait(400)
+
+edgeAssert('a refresh does not move the total', chipH() === beforeRefreshH, `was ${beforeRefreshH.toLocaleString('en-US')}, now ${chipH().toLocaleString('en-US')}`)
+
+tickH(9000)
+await wait(250)
+
+edgeAssert(
+  'counting continues after a refresh',
+  chipH() === rowH + 9000,
+  `expected ${(rowH + 9000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')} — the refresh discarded the live term`
+)
+
+// The turn ends and the row is written: the anchor moves, and the tokens already
+// counted live must not be added a second time.
+globalThis.__stAddRowExtra_H?.(9000)
+;[...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1).querySelector('button')?.click()
+await wait(400)
+
+edgeAssert(
+  'a row advance neither double-counts nor drops',
+  chipH() === rowH + 9000,
+  `expected ${(rowH + 9000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
+)
+
+tickH(15000)
+await wait(250)
+
+edgeAssert(
+  'counting resumes from the new anchor',
+  chipH() === rowH + 15000,
+  `expected ${(rowH + 15000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
+)
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
