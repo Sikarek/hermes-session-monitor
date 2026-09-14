@@ -82,6 +82,19 @@ const ID = 'session-monitor'
 const POLL_MS = 15_000
 
 /**
+ * Which session the monitor describes: the one in the MAIN area — the chat on screen — not the
+ * focused tile. The app's own code separates the two (`$activeSessionId` gates its `mainMatches`,
+ * `$focusedRuntimeId` its `tileMatches`), and clicking a pane's tab or the sidebar moves the tile
+ * focus without changing the conversation in front of you.
+ *
+ * The STORED id must come from the same session as the runtime id, which is why the row read
+ * resolves and adopts it: pairing the main area's runtime id with the FOCUSED stored id (as an
+ * earlier attempt did) matched the wrong row and painted another session's figures.
+ * Set false to key on the focused tile instead.
+ */
+const PREFER_ACTIVE_CHAT = true
+
+/**
  * Tokens and cost of every session spawned under `rootId` — subagents (and their
  * own subagents), from the SAME page the base row comes from: the row carries
  * `parent_session_id`, so no extra read is needed. Child sessions keep their own
@@ -233,7 +246,7 @@ function useMonitor() {
   // pull was addressed to the wrong runtime id). The active id remains only a fallback for when the
   // focused ids are absent.
   const activeRuntimeId = typeof host.state.activeSessionId !== 'undefined' ? useValue(host.state.activeSessionId) : null
-  const runtimeId = focusedRuntimeId ?? activeRuntimeId
+  const runtimeId = PREFER_ACTIVE_CHAT ? activeRuntimeId ?? focusedRuntimeId : focusedRuntimeId ?? activeRuntimeId
   const storedId = focusedStoredId
   // The identity every term is attributed to, and the key the per-session reset is tied to: if
   // EITHER half changes, the figures on screen belong to the previous session. Keying on one half
@@ -545,6 +558,11 @@ function useMonitor() {
         candidate => matches(candidate, wantStored) || (runtimeId && candidate?.resolved_id === runtimeId)
       )
       const effectiveStored = row?.id ?? wantStored
+
+      // Adopt the resolved stored id: with the main area's runtime id leading, the focused stored
+      // id can belong to a different session, and every guard that compares stored ids (the
+      // session.info attribution, the resets) has to see the one actually on screen.
+      if (row?.id && row.id !== storedRef.current) storedRef.current = row.id
 
       setSubagents(row ? descendantsOf(page, effectiveStored) : null)
 
