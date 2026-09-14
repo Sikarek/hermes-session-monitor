@@ -5,6 +5,8 @@
 First public release.
 
 - Status-bar chip showing the focused session's total tokens, cost and cache-hit rate.
+- Context window above the token section (`used / max · percent`, from the live usage
+  payload, with a fill bar) so the split and the window sit in one popover.
 - Click panel with three rows that partition the session total: **Cache hit** (`cache_read + cache_write`), **Cache miss** (uncached input) and **Output** (everything generated, reasoning included), plus the two derived figures below a rule.
 - Live counting while the model works: streamed reasoning and reply text are measured chunk by chunk, and each completed API call replaces the estimate with the provider's reported total.
 - Per-session isolation by strict id attribution (focused runtime id or stored id) — a second window or subagent can never contribute to this chip.

@@ -14,6 +14,7 @@ Click the chip for the breakdown:
 
 ```
 Session monitor
+Context             421,888 / 1,000,000 · 42%     window in use (bar below it)
 Cache hit                 196,470,400     prompt tokens served from the provider cache
 Cache miss                    353,194     uncached input
 Output                        415,353     everything the model generated
@@ -27,6 +28,7 @@ Cost                             $1.78
 
 | Row                      | Meaning                                                                                                                                        |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Context**        | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |
 | **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                           |
 | **Cache miss**     | Uncached input tokens.                                                                                                                         |
 | **Output**         | Every token the model generated, reasoning included.                                                                                           |
@@ -95,14 +97,15 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 ## Privacy & security
 
-The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — three state atoms, three event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
+The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — three state atoms, four event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
 
 | Host call                             | Purpose                                                     |
 | ------------------------------------- | ----------------------------------------------------------- |
 | `host.state.focusedStoredSessionId` | Which session this window is showing                        |
 | `host.state.focusedSessionId`       | Its runtime id                                              |
 | `host.state.focusedSessionProfile`  | Its profile                                                 |
-| `host.onEvent('session.usage')`     | Completed-call token totals for that session                |
+| `host.onEvent('session.usage')`     | Completed-call token totals and the context window          |
+| `host.onEvent('session.info')`      | The same usage snapshot when a session is opened or resumed |
 | `host.onEvent('message.delta')`     | The answer's streamed text (measured, not kept)             |
 | `host.onEvent('reasoning.delta')`   | The reasoning's streamed text (measured, not kept)          |
 | `host.listPersistedSessions()`      | The focused profile's session rows — the figures displayed |
@@ -129,6 +132,7 @@ grep -oE "host\.(onEvent\('[a-z.]+'|state\.[a-zA-Z]+|listPersistedSessions)" plu
 #    → 3 host.listPersistedSessions          (1 call + 2 comment mentions)
 #    → 1 host.onEvent('message.delta'
 #    → 1 host.onEvent('reasoning.delta'
+#    → 1 host.onEvent('session.info'
 #    → 1 host.onEvent('session.usage'
 #    → 1 host.state.focusedSessionId
 #    → 1 host.state.focusedSessionProfile
@@ -173,7 +177,7 @@ Run the mount test before installing an edited copy:
 node session-monitor/smoke.mjs
 ```
 
-It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks, asserts the panel rows and the labels/figures contrast rule, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
+It stubs the plugin SDK, mounts the chip against a real React root inside an error boundary, fires synthetic content chunks and attributed usage/context payloads, asserts the panel rows, the labels/figures contrast rule, the context bar width and the percentage-free rows, checks the popover width contract, mounts two simulated windows to prove per-session isolation, and mounts a deliberately broken copy to prove failure containment. It fails on render *and* effect-time errors — `node --check` cannot detect an undefined identifier, and an uncontained plugin throw reaches the app's root error boundary, which blanks the window. The harness locates the Hermes checkout through `os.homedir()`, so it runs on all three platforms without hardcoded paths.
 
 ## License
 

@@ -329,8 +329,10 @@ const expected = (stored + 40).toLocaleString('en-US')
 
 if (!live.failures.length) {
   try {
-    if (!globalThis['__stEvents_A']?.['reasoning.delta'] || !globalThis['__stEvents_A']?.['message.delta']) {
-      throw new Error('plugin did not subscribe to the content streams')
+    for (const event of ['reasoning.delta', 'message.delta', 'session.usage', 'session.info']) {
+      if (!globalThis['__stEvents_A']?.[event]) {
+        throw new Error(`plugin did not subscribe to ${event}`)
+      }
     }
 
     const container = document.body.lastElementChild
@@ -368,6 +370,42 @@ if (!live.failures.length) {
       throw new Error(`a matching usage tick was not adopted: expected ${expectedAfterUsage} in "${afterUsage.trim().slice(0, 90)}"`)
     }
 
+    // CONTEXT CONTRACT: the window paints from an attributed usage payload. The
+    // session.info path (stored id) is what shows it before the next API call.
+    globalThis['__stEvents_A']['session.info']({
+      payload: {
+        stored_session_id: WINDOWS.a.stored,
+        usage: { context_estimated: false, context_max: 200000, context_percent: 21, context_used: 41200 }
+      },
+      session_id: WINDOWS.a.runtime,
+      type: 'session.info'
+    })
+    await wait(250)
+
+    const afterContext = document.body.textContent ?? ''
+
+    if (!afterContext.includes('41,200 / 200,000 · 21%')) {
+      throw new Error(`context row not painted: "${afterContext.trim().slice(0, 120)}"`)
+    }
+
+    const fill = document.querySelector('[data-slot="session-monitor-context-bar"] span')
+
+    if (fill?.style?.width !== '21%') {
+      throw new Error(`context bar width wrong: got "${fill?.style?.width ?? 'no fill'}" for 21%`)
+    }
+
+    // A foreign session.info must not paint its window here (stored id decides).
+    globalThis['__stEvents_A']['session.info']({
+      payload: { stored_session_id: 'storedZ', usage: { context_max: 1000, context_percent: 99, context_used: 999 } },
+      session_id: 'rtZ',
+      type: 'session.info'
+    })
+    await wait(150)
+
+    if ((document.body.textContent ?? '').includes('999 / 1,000')) {
+      throw new Error('a foreign session.info painted its context window')
+    }
+
     // The hover tooltip was removed on request (the click panel carries the
     // detail). Guard it: if a Tip ever returns, this fails.
     const tipLabels = globalThis.__stTipLabels ?? []
@@ -382,7 +420,7 @@ if (!live.failures.length) {
     const panel = document.body.textContent ?? ''
     const expectedTotal = stored.toLocaleString('en-US')
 
-    for (const needle of ['Session monitor', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
+    for (const needle of ['Session monitor', 'Context', 'Cache hit', 'Cache miss', 'Output', 'Total', 'Cache hit rate', 'Cost']) {
       if (!panel.includes(needle)) throw new Error(`panel is missing "${needle}" — got: ${panel.slice(0, 200)}`)
     }
 
@@ -418,7 +456,7 @@ if (!live.failures.length) {
     // non-numeric element allowed to.
     const vividEls = [...panelEl.querySelectorAll('*')].filter(el => el.classList.contains('text-foreground'))
     const vividText = vividEls.map(el => (el.textContent ?? '').trim())
-    const stray = vividText.filter(text => text !== 'Session monitor' && !/\d/.test(text))
+    const stray = vividText.filter(text => text !== 'Session monitor' && text !== '—' && !/\d/.test(text))
 
     if (stray.length) {
       throw new Error(`highlighted text that is not a figure: ${stray.join(' | ').slice(0, 90)}`)

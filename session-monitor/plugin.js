@@ -31,7 +31,8 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
- * PANEL — titled "Session monitor": three rows that PARTITION the session total
+ * PANEL — titled "Session monitor": the CONTEXT window (used / max + a fill bar)
+ * above the token section, then three rows that PARTITION the session total
  * (Cache hit = cache read + cache write, Cache miss = uncached input, Output =
  * generation incl. reasoning), closed by the Total row they sum to, then a
  * hairline and two derived figures (cache hit rate, cost). The rows carry no
@@ -39,7 +40,7 @@
  *
  * WHAT IT READS — the complete surface, verifiable by reading this file:
  *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile
- *   · host.onEvent: session.usage, message.delta, reasoning.delta
+ *   · host.onEvent: session.usage, session.info, message.delta, reasoning.delta
  *   · host.listPersistedSessions(): the focused profile's session rows, refreshed
  *     every POLL_MS and at turn end
  * It never reads prompt or message content — streamed text is measured with
@@ -96,6 +97,9 @@ function Chip() {
   // base(null→0) + grown(live total) on mount — i.e. the PROCESS-local counter
   // (~45M) instead of the SESSION total (~92M) for the first ~100ms.
   const [rowState, setRowState] = useState('pending')
+  // Context window of the focused session — `used / max` and the percentage.
+  // Fed only from payloads already attributed to this session (see takeContext).
+  const [ctx, setCtx] = useState(null)
   const [, repaint] = useState(0)
 
   const live = useRef(0) // completed-call counters for the focused runtime session
@@ -127,6 +131,22 @@ function Chip() {
   }, [])
 
   useEffect(() => () => frame.current && cancelAnimationFrame(frame.current), [])
+
+  // Context fields ride on the same usage payloads as the token totals. The
+  // callers check attribution first — the usage event by its runtime id, session
+  // info by its stored id — so what lands here is always THIS session's window.
+  // Declared ABOVE the events effect: that effect's dependency array is evaluated
+  // during render, so a later `const` would sit in its temporal dead zone.
+  const takeContext = useCallback(usage => {
+    if (!usage) return
+
+    const used = n(usage.context_used)
+    const max = n(usage.context_max)
+
+    if (used > 0 || max > 0) {
+      setCtx({ estimated: Boolean(usage.context_estimated), max, percent: n(usage.context_percent), used })
+    }
+  }, [])
 
   useEffect(() => {
     if (typeof host.onEvent !== 'function') return undefined
@@ -178,9 +198,20 @@ function Chip() {
       host.onEvent('session.usage', event => {
         if (!forFocused(event.session_id)) return
 
-        const total = event.payload?.usage?.total
+        const usage = event.payload?.usage
+        const total = usage?.total
+
+        takeContext(usage)
 
         if (typeof total === 'number' && total > live.current) onTick(total)
+      }),
+      // `session.info` carries the same usage snapshot when a session is opened or
+      // resumed — the only way the context row paints before the next API call.
+      // Attributed by STORED id: this event carries no runtime id of its own.
+      host.onEvent('session.info', event => {
+        if (event.payload?.stored_session_id !== storedRef.current) return
+
+        takeContext(event.payload?.usage)
       }),
       // The two CONTENT streams: `message.delta` is the answer, `reasoning.delta`
       // is the model thinking — those are the words that cost output tokens.
@@ -193,7 +224,7 @@ function Chip() {
     ]
 
     return () => offs.forEach(off => off())
-  }, [schedule])
+  }, [schedule, takeContext])
 
   // Completed calls arrive as `session.usage` EVENTS, attributed strictly below.
   // The fused `host.state.focusedUsage` atom is deliberately NOT used: the app
@@ -282,6 +313,7 @@ function Chip() {
     chunks.current = 0
     best.current = 0
     setBase(null)
+    setCtx(null)
     setRowState('pending')
     void load()
   }, [load])
@@ -293,6 +325,7 @@ function Chip() {
     live.current = 0
     liveAtFetch.current = 0
     chars.current = 0
+    setCtx(null)
     void load()
   }, [load, runtimeId])
 
@@ -368,7 +401,7 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, {
-          stats: { base, grown, rowState, streamed, total }
+          stats: { base, ctx, grown, rowState, streamed, total }
         })
       })
     ]
@@ -381,7 +414,7 @@ function Chip() {
  * muted, figure full contrast), a hairline before the derived figures.
  */
 function TokenPanel({ stats }) {
-  const { base, grown, rowState, streamed, total } = stats
+  const { base, ctx, grown, rowState, streamed, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   const estimating = grown > 0 || streamed > 0
@@ -425,6 +458,38 @@ function TokenPanel({ stats }) {
       // removed on request — at these proportions a bar is one solid colour and
       // the percentages restated the Total. The cache ratio lives in the
       // "Cache hit rate" line below the rule.
+      // Context window, above the token rows: full digits (like the session
+      // figures) and a single-fill bar whose width is the share of the window in
+      // use. Placeholder row until a payload arrives, so the layout never jumps.
+      jsxs('div', { className: 'flex flex-col gap-1.5', children: [
+        jsxs('div', { key: 'context-row', className: 'flex items-baseline justify-between gap-2', children: [
+          jsx('span', { className: 'truncate text-muted-foreground', children: 'Context' }),
+          jsx('span', {
+            className: 'tabular-nums text-foreground',
+            children: ctx
+              ? `${ctx.estimated ? '~' : ''}${fmt(ctx.used)}${ctx.max > 0 ? ` / ${fmt(ctx.max)} · ${Math.round(ctx.percent)}%` : ''}`
+              : '—'
+          })
+        ]}),
+        jsx('div', {
+          key: 'context-bar',
+          'data-slot': 'session-monitor-context-bar',
+          className: cn(
+            'flex h-1.5 overflow-hidden rounded-full',
+            ctx ? 'bg-(--ui-stroke-tertiary)' : 'dither bg-(--ui-bg-elevated)'
+          ),
+          // Children stay INSIDE props: in the automatic runtime the third argument
+          // of jsx/jsxs is the KEY, so passing an element there silently renders an
+          // empty element (this bug shipped for one test run: the bar had no fill).
+          children: ctx
+            ? jsx('span', {
+                key: 'context-fill',
+                className: 'h-full min-w-px rounded-full bg-(--ui-text-tertiary)',
+                style: { width: `${Math.max(0, Math.min(100, ctx.percent))}%` }
+              })
+            : null
+        })
+      ]}),
       jsxs('ul', { className: 'flex flex-col gap-1.5', children: [
         row('cached', 'Cache hit', fmt(cachedInput)),
         row('in', 'Cache miss', fmt(base?.in ?? 0)),
