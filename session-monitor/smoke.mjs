@@ -277,6 +277,7 @@ const WINDOWS = {
   o: { cacheRead: 7000, key: 'O', runtime: 'rtO', stored: 'storedO' }, // focus vs active chat
   p: { cacheRead: 3000, key: 'P', runtime: 'rtP', stored: 'storedP' }, // the context figure's session stamp
   q: { cacheRead: 1000, key: 'Q', runtime: 'rtQ', stored: 'storedQ' }, // the backend half's recorded totals
+  r: { cacheRead: 1500, key: 'R', runtime: 'rtR', stored: 'storedR' }, // view lifecycle
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -428,6 +429,7 @@ async function mount(modulePath) {
   }
 
   let nodes = []
+  let rerender = null
 
   try {
     const plugin = (await import(modulePath)).default
@@ -436,13 +438,23 @@ async function mount(modulePath) {
 
     if (registered.length === 0) throw new Error('register() contributed nothing')
 
-    const mounted = globalThis.__stPaneOnly ? registered.filter(c => c.area === 'panes') : registered
+    const mountable = () =>
+      (globalThis.__stPaneOnly ? registered.filter(c => c.area === 'panes') : registered)
+        .map(contribution => (contribution.render ? contribution.render() : contribution.data?.render?.() ?? null))
+        .filter(Boolean)
 
-    nodes = mounted
-      .map(contribution => (contribution.render ? contribution.render() : contribution.data?.render?.() ?? null))
-      .filter(Boolean)
+    nodes = mountable()
 
-    createRoot(rootEl).render(React.createElement(Boundary, null, nodes))
+    const root = createRoot(rootEl)
+
+    root.render(React.createElement(Boundary, null, nodes))
+    // Re-render with a subset: this UNMOUNTS the omitted views for real, which is how a tab closing
+    // or a hidden status-bar item behaves — the lifecycle bug this exists to catch (a view's unmount
+    // tearing down the window's subscriptions while another view was still on screen).
+    rerender = filter => {
+      globalThis.__stPaneOnly = filter === 'panes'
+      root.render(React.createElement(Boundary, null, mountable()))
+    }
     await wait(450)
   } catch (error) {
     failures.push(`threw: ${error?.message}\n      ${(error?.stack ?? '').split('\n').slice(1, 4).join('\n      ')}`)
@@ -452,7 +464,7 @@ async function mount(modulePath) {
 
   console.error = originalError
 
-  return { boundaryCaught, chatter, container: rootEl, failures, markup, nodes, registered }
+  return { boundaryCaught, chatter, container: rootEl, failures, markup, nodes, registered, rerender }
 }
 
 // ── phase 1: the real plugin
@@ -1314,6 +1326,45 @@ globalThis['__stEvents_P']['session.info']({
 await wait(250)
 
 edgeAssert('the figure for the current runtime paints', panelP().includes('222,222'), `got "${panelP().slice(0, 90)}"`)
+
+// R — A VIEW CLOSING MUST NOT STOP THE WINDOW. The engine runs once per window; its handles belong
+// to whoever is mounted last, not to whoever installed them. Unmounting a view (closing a pane tab,
+// hiding the status-bar item) used to tear the subscriptions and the poll down while the other view
+// was still on screen — that view then never moved again except on a session change, which is the
+// "Overview only updates when I click a session" report.
+const winR = await mount(toModule(code, 'plugin-winR.mjs', stubPathFor(WINDOWS.r)))
+await wait(450)
+
+// Take the CHIP away, leaving the panes: the Overview must keep counting.
+winR.rerender?.('panes')
+await wait(250)
+globalThis['__stEvents_R']['session.usage']({ payload: { usage: { calls: 3, total: 7000 } }, session_id: WINDOWS.r.runtime, type: 'session.usage' })
+await wait(300)
+
+const overviewR = () => winR.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+// The tick reached the Overview at all — `Total requests 3` is its delta — which is the contract:
+// with the chip gone, the panes' window kept its subscriptions. (Its token delta is zero on the
+// first tick by design: the first sighting of a counter is a baseline, not growth.)
+edgeAssert(
+  'the Overview keeps counting after the chip unmounts',
+  /Total requests3/.test(overviewR()),
+  `got "${overviewR().slice(0, 130)}"`
+)
+
+// And the other way round: with the panes gone, the chip must still count.
+winR.rerender?.('statusBar')
+await wait(300)
+
+// Two ticks: the first is the remounted view's baseline (the documented rule), the second is growth.
+globalThis['__stEvents_R']['session.usage']({ payload: { usage: { total: 12000 } }, session_id: WINDOWS.r.runtime, type: 'session.usage' })
+await wait(200)
+globalThis['__stEvents_R']['session.usage']({ payload: { usage: { total: 16000 } }, session_id: WINDOWS.r.runtime, type: 'session.usage' })
+await wait(300)
+
+const chipR = winR.container?.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? ''
+
+edgeAssert('the chip keeps counting after the panes unmount', /7,000|3,000 \+ 4,000/.test(chipR) || /6,999|7,001/.test(chipR), `got "${chipR.slice(0, 60)}"`)
 
 // Q — THE RECORDED TOTALS (the backend half): with `/api/plugins/session-monitor/summary` answering,
 // the Overview shows Hermes' own record over EVERY session — every provider, every model, tasks

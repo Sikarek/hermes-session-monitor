@@ -277,8 +277,15 @@ function useUI() {
 
 /** Every mounted view's repaint trigger, so one subscriber can refresh all of them. */
 const REPAINTS = new Set()
-/** Install the event subscriptions and the poll ONCE per window, not once per view. */
+/**
+ * The engine runs ONCE per window, however many views are mounted — but its handles live here, not
+ * in the view that happened to install them. A view's tab closing must not tear the engine down
+ * while another view is still on screen: doing that left a mounted view with no subscriptions and
+ * no poll, so nothing moved until a session change forced a read ("the Overview only updates when I
+ * click a session"). Teardown now happens on the last exit, and a later mount re-arms.
+ */
 const OWNERS = { events: 0, poll: 0 }
+const ENGINE = { offs: [], timer: 0 }
 
 /**
  * The monitor itself: subscriptions, the poll, the context pulls and every figure.
@@ -535,9 +542,17 @@ function useMonitor() {
       host.onEvent('reasoning.delta', countText)
     ]
 
+    ENGINE.offs = offs
+
     return () => {
       OWNERS.events -= 1
-      offs.forEach(off => off())
+
+      // Same rule as the poll: the LAST view out unsubscribes, and whichever view that is owns the
+      // handles — not necessarily the one that installed them.
+      if (OWNERS.events === 0) {
+        ENGINE.offs.forEach(off => off())
+        ENGINE.offs = []
+      }
     }
   }, [schedule, takeContext])
 
@@ -829,17 +844,21 @@ function useMonitor() {
 
     void loadRecorded(restRef.current)
 
-    const timer =
-      OWNERS.poll === 1
-        ? setInterval(() => {
-            void load()
-            void pullContext() // no-op unless the window is still unknown
-          }, POLL_MS)
-        : 0
+    if (OWNERS.poll === 1) {
+      ENGINE.timer = setInterval(() => {
+        void load()
+        void pullContext() // no-op unless the window is still unknown
+      }, POLL_MS)
+    }
 
     return () => {
       OWNERS.poll -= 1
-      if (timer) clearInterval(timer)
+
+      // Last view out stops the poll — and only then, wherever it was installed from.
+      if (OWNERS.poll === 0 && ENGINE.timer) {
+        clearInterval(ENGINE.timer)
+        ENGINE.timer = 0
+      }
     }
   }, [load])
 
