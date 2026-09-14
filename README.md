@@ -77,6 +77,7 @@ The total is assembled from three sources, in this order:
 | Live text       | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream                                                                                                                                          | No — superseded by the next completed call                |
 
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
+- **Which session it describes** — the **active chat**: the conversation on screen. Clicking around the sidebar moves *focus* (tiles, projects, panes) without changing that conversation, so a readout keyed on focus described the last thing clicked instead of the chat being worked in. The focused ids are the fallback for drafts and older desktops. The app's own context gauge reads `activeSessionId` for the same reason.
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are counted, on their own line** — their tokens live in their own session rows, which is why the partition above is this session's own. The panel adds a `Subagents` line (tokens · cost) and the chip's total and cost include them, summed transitively from the same page (a subagent that spawned its own is still this session's). Their *live* ticks are still refused — they carry the child's session id, and accepting unknown ids is what once let another session's work inflate this chip — so the figure updates when a child writes its row, i.e. at the end of its own turn.
@@ -244,6 +245,7 @@ Edge cases — each is a situation the chip meets in the field:
 | A manual refresh (or the 15 s poll) while the model works                  | The live term survives; the counter keeps climbing, and a row advance is not counted twice                                                            |
 | A slow read landing after a newer one (refresh racing the poll, or a session switch mid-read) | Dropped: the newest read for the session on screen wins |
 | A view mounting after another has been running (opening the pane's tab) | It shows the same figures — one history, one set of values, per window |
+| Clicking elsewhere in the sidebar (focusing another tile or project) | The monitor stays on the chat on screen, not the last thing clicked |
 | A deliberately broken copy of the plugin                                   | The error boundary contains it; the app root is never reached                                                                                         |
 
 Every assertion above was mutation-checked: reintroducing each bug makes the suite

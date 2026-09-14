@@ -90,6 +90,12 @@ Built and iterated on 2026-09-14. Never tagged, never published.
   rejection left the row `—` until the next turn. The pull is now retried briefly, re-asked
   by the poll while the window is still unknown, and re-asked whenever the window's
   session changes (including a resume whose runtime id arrives after the switch).
+- **The monitor described the tile you last clicked, not the chat you were in** — it keyed on the
+  *focused* session, and clicking around the sidebar (tiles, projects, panes) moves focus without
+  changing the conversation on screen, so the figures flipped to another session until the chat
+  was clicked again. It now follows the **active chat** (`activeSessionId`, resolved to its stored
+  row by `resolved_id`), with the focused ids as the fallback; the app's own context gauge reads
+  the same value.
 - **Opening the sidebar pane could show different figures than the chip** — each view kept its
   own accumulators (live counters, anchor, high-water mark, streamed characters) and its own
   display values, so a view that had just mounted started from an empty history: the pane

@@ -67,6 +67,7 @@ const stubFor = w => {
   const LIST_CALLS = JSON.stringify(`__stListCalls_${w.key}`)
   const SET_MODEL = JSON.stringify(`__stSetModel_${w.key}`)
   const SET_SESSION = JSON.stringify(`__stSetSession_${w.key}`)
+  const SET_FOCUS = JSON.stringify(`__stSetFocus_${w.key}`)
   const cacheWrite = String(w.cacheWrite ?? 0)
   const ROW_EXTRA = JSON.stringify(`__stRowExtra_${w.key}`)
   const ADD_ROW_EXTRA = JSON.stringify(`__stAddRowExtra_${w.key}`)
@@ -137,6 +138,7 @@ const atom = atomImpl
 const modelAtom = atom(${JSON.stringify('deepseek/deepseek-v4.1-flash')})
 const storedAtom = atom(${stored})
 const runtimeAtom = atom(${runtime})
+const activeAtom = atom(${runtime}) // the chat on screen; the monitor follows this one
 let rowExtra = 0
 globalThis[${ADD_ROW_EXTRA}] = extra => {
   rowExtra = extra
@@ -147,7 +149,7 @@ const EVENTS = (globalThis[${key}] = {})
 
 export const host = {
   state: {
-    activeSessionId: atom(${runtime}),
+    activeSessionId: activeAtom,
     busy: atom(false),
     focusedSessionId: runtimeAtom,
     focusedSessionProfile: atom('default'),
@@ -210,7 +212,14 @@ export const host = {
 // Subscribing hop, like the app's useStore: without it a mutated atom would never
 // re-render the chip and every change-propagation contract would be untestable.
 globalThis[${SET_MODEL}] = next => modelAtom.set(next)
+// Clicking a session in the sidebar makes it the ACTIVE chat and the focused tile.
 globalThis[${SET_SESSION}] = (storedId, runtimeId) => {
+  storedAtom.set(storedId)
+  runtimeAtom.set(runtimeId)
+  activeAtom.set(runtimeId)
+}
+// Moving FOCUS only (clicking a tile, a project, another pane) — the active chat stays put.
+globalThis[${SET_FOCUS}] = (storedId, runtimeId) => {
   storedAtom.set(storedId)
   runtimeAtom.set(runtimeId)
 }
@@ -265,6 +274,7 @@ const WINDOWS = {
   k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' }, // pull retry + session change
   m: { cacheRead: 2000, key: 'M', runtime: 'rtM', stored: 'storedM' }, // pane without the chip
   n: { cacheRead: 4000, key: 'N', runtime: 'rtN', stored: 'storedN' }, // out-of-order reads
+  o: { cacheRead: 7000, key: 'O', runtime: 'rtO', stored: 'storedO' }, // focus vs active chat
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -1157,6 +1167,36 @@ edgeAssert(
   chipN().includes('222') && !chipN().includes('999,999'),
   `expected the newer read to stand — got "${chipN().trim().slice(0, 60)}"`
 )
+// O — FOCUS MOVES, THE CHAT DOES NOT (the reported behaviour): clicking around the sidebar
+// focuses other tiles without changing the conversation on screen. The monitor must keep
+// describing the chat being used — the ACTIVE one — not the tile that was last clicked.
+const winO = await mount(toModule(code, 'plugin-winO.mjs', stubPathFor(WINDOWS.o)))
+const chipO = () => winO.container?.textContent ?? ''
+
+await wait(300)
+
+const beforeFocusMove = chipO()
+
+// Focus a DIFFERENT session (storedO2), leaving the active chat on storedO.
+globalThis.__stSetFocus_O?.('storedO2', 'rtO2')
+await wait(300)
+
+edgeAssert(
+  'moving focus does not change the session shown',
+  chipO() === beforeFocusMove && !chipO().includes('999'),
+  `expected the active chat to stay — got "${chipO().trim().slice(0, 60)}"`
+)
+
+// Clicking the active chat again must leave it exactly where it is.
+globalThis.__stSetSession_O?.(WINDOWS.o.stored, WINDOWS.o.runtime)
+await wait(300)
+
+edgeAssert(
+  'clicking the chat keeps it',
+  chipO().includes(WINDOWS.o.cacheRead ? '' : '') && chipO() === beforeFocusMove,
+  `expected the same figures — got "${chipO().trim().slice(0, 60)}"`
+)
+
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
   globalThis['__stEvents_A']['session.usage']({ payload, session_id: WINDOWS.a.runtime, type: 'session.usage' })

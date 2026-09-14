@@ -218,8 +218,17 @@ const OWNERS = { events: 0, poll: 0 }
  * mounted while its tab is showing, so it cannot rely on the chip's instance).
  */
 function useMonitor() {
-  const storedId = useValue(host.state.focusedStoredSessionId)
-  const runtimeId = useValue(host.state.focusedSessionId)
+  // WHICH SESSION. The active chat — the one on screen — leads, not the focused tile:
+  // clicking around the sidebar moves focus (tiles, projects, panes) without changing the
+  // chat being worked in, and the monitor described the tile the user had just clicked
+  // instead of the conversation in front of them. The app's own context gauge reads
+  // `activeSessionId` for the same reason; the focused ids remain as the fallback for
+  // drafts and older desktops that do not expose it.
+  const focusedStoredId = useValue(host.state.focusedStoredSessionId)
+  const focusedRuntimeId = useValue(host.state.focusedSessionId)
+  const activeRuntimeId = typeof host.state.activeSessionId !== 'undefined' ? useValue(host.state.activeSessionId) : null
+  const runtimeId = activeRuntimeId ?? focusedRuntimeId
+  const storedId = focusedStoredId
   const profile = useValue(host.state.focusedSessionProfile)
   // The model decides the context WINDOW, so a switch has to invalidate it.
   const model = useValue(host.state.model)
@@ -501,11 +510,20 @@ function useMonitor() {
 
       // Drop a superseded or now-unrelated response BEFORE touching any state: the window
       // may have moved on while this read was in flight.
-      if (seq !== loadSeq.current || storedRef.current !== wantStored) return
+      if (seq !== loadSeq.current) return
+      if (storedRef.current !== wantStored && !(runtimeId && (page?.sessions ?? []).some(candidate => candidate?.resolved_id === runtimeId))) return
 
-      const row = (page?.sessions ?? []).find(candidate => matches(candidate, wantStored))
+      // Match the stored id when the focused tile is the chat on screen; otherwise resolve
+      // the ACTIVE chat by its runtime id (`resolved_id` on the row) and adopt that row's
+      // stored id, so the figures, the subagents and the guards all describe one session.
+      const row = (page?.sessions ?? []).find(
+        candidate => matches(candidate, wantStored) || (runtimeId && candidate?.resolved_id === runtimeId)
+      )
+      const effectiveStored = row?.id ?? wantStored
 
-      setSubagents(row ? descendantsOf(page, wantStored) : null)
+      if (row?.id && row.id !== wantStored) storedRef.current = row.id
+
+      setSubagents(row ? descendantsOf(page, effectiveStored) : null)
 
       if (row) {
         const rowTotal = tokenCount(row)
@@ -519,7 +537,7 @@ function useMonitor() {
 
         rowTotalRef.current = rowTotal
 
-        debug('row', { rowTotal: tokenCount(row), storedId })
+        debug('row', { rowTotal: tokenCount(row), storedId: effectiveStored })
         setRowState('ok')
         setBase({
           cacheRead: n(row.cache_read_tokens),
