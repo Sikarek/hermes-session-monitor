@@ -202,14 +202,13 @@ function Chip() {
   // idle session's chip climb.
   const onTick = useCallback(
     total => {
-      const now = Date.now()
-      const jump = total - live.current
-      const since = now - lastTickAt.current
-
-      // First tick after a (re)mount has no interval to measure against.
-      if (jump > 0 && since > 0 && since < 60_000) rate.current = jump / since
-
-      lastTickAt.current = now
+      // `total` is the runtime session's CUMULATIVE counter (process-local, so it
+      // restarts at zero on resume); the growth the stored row is missing is
+      // therefore `total - liveAtFetch`, computed where the total is rendered.
+      // NOTE: this handler once carried a tokens-per-second estimate that
+      // referenced a variable nothing declared — the throw was swallowed by the
+      // app's listener wrapper, so the chip silently stopped adopting real
+      // totals. Duration measurement lives nowhere now; keep this handler pure.
       live.current = total
       chars.current = 0 // this call's text is inside `total` now
       schedule()

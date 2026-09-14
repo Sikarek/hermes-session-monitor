@@ -348,6 +348,26 @@ if (!live.failures.length) {
       throw new Error(`streamed chunks did not reach the total: expected "${expected}" in "${after.trim().slice(0, 90)}" (was "${before.trim().slice(0, 60)}")`)
     }
 
+    // COMPLETED-CALL contract: a `session.usage` tick for THIS session must be
+    // adopted. This path was untested while it shipped a ReferenceError — the
+    // app's listener wrapper swallows handler throws, so the chip silently kept
+    // an estimate instead of the real total and every test still passed.
+    const usageTotal = 5000 // fresh process: the runtime counter starts at 0
+
+    globalThis['__stEvents_A']['session.usage']({
+      payload: { usage: { total: usageTotal } },
+      session_id: WINDOWS.a.runtime,
+      type: 'session.usage'
+    })
+    await wait(250)
+
+    const afterUsage = container.textContent ?? ''
+    const expectedAfterUsage = (stored + usageTotal).toLocaleString('en-US')
+
+    if (!afterUsage.includes(expectedAfterUsage)) {
+      throw new Error(`a matching usage tick was not adopted: expected ${expectedAfterUsage} in "${afterUsage.trim().slice(0, 90)}"`)
+    }
+
     // The hover tooltip was removed on request (the click panel carries the
     // detail). Guard it: if a Tip ever returns, this fails.
     const tipLabels = globalThis.__stTipLabels ?? []
