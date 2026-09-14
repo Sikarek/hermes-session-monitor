@@ -412,6 +412,15 @@ if (!live.failures.length) {
       throw new Error(`panel width class missing ("${panelEl.className}")`)
     }
 
+    // CONTRAST CONTRACT: the title is the only full-contrast text in the panel —
+    // every figure is muted (hierarchy by weight, not by colour). `text-foreground/90`
+    // is a different class token, so `classList.contains` sees only exact matches.
+    const vivid = [...panelEl.querySelectorAll('*')].filter(el => el.classList.contains('text-foreground'))
+
+    if (vivid.length !== 1 || !(vivid[0].textContent ?? '').includes('Session monitor')) {
+      throw new Error(`expected the title to be the only full-contrast text, got ${vivid.length}: ${vivid.map(el => el.textContent).join(' | ').slice(0, 90)}`)
+    }
+
     const expectedShare = ((WINDOWS.a.cacheRead / (WINDOWS.a.cacheRead + 1000 + 500)) * 100).toFixed(2) + '%'
     const expectedTotalText = (WINDOWS.a.cacheRead + 1000 + 500).toLocaleString('en-US')
 
