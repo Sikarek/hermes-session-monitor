@@ -85,12 +85,25 @@ const stubFor = w => {
     }`
     )
     .join('')
+  const READ_ROWS = JSON.stringify(`__stReadRows_${w.key}`)
+  const READ_DELAYS = JSON.stringify(`__stReadDelays_${w.key}`)
+  const READ_CALLS = JSON.stringify(`__stReadCalls_${w.key}`)
   const LIST_READ = w.noRowMethod
     ? 'listPersistedSessions: undefined,'
     : `listPersistedSessions: async () => {
-    globalThis[${LIST_CALLS}] = (globalThis[${LIST_CALLS}] ?? 0) + 1
+    const call = (globalThis[${READ_CALLS}] = (globalThis[${READ_CALLS}] ?? 0) + 1)
+
+    ;(globalThis[${LIST_CALLS}] = (globalThis[${LIST_CALLS}] ?? 0) + 1)
 
     if (${READ_THROWS}) throw new Error('backend hiccup: sessions read failed')
+
+    // Per-call fixtures: a test can hand back a different payload (and a different delay)
+    // per read, which is how an out-of-order response is reproduced.
+    const delays = globalThis[${READ_DELAYS}]
+    const rows = globalThis[${READ_ROWS}]
+
+    if (delays && delays[call - 1]) await new Promise(resolve => setTimeout(resolve, delays[call - 1]))
+    if (rows && rows[call - 1]) return { limit: 1, offset: 0, sessions: rows[call - 1], total: rows[call - 1].length }
 
     return {
     limit: 1, offset: 0, total: 1,
@@ -251,6 +264,7 @@ const WINDOWS = {
   j: { cacheRead: 20000, key: 'J', runtime: 'rtJ', stored: 'storedJ' }, // a plugin mounted mid-session
   k: { cacheRead: 30000, key: 'K', runtime: 'rtK', stored: 'storedK' }, // pull retry + session change
   m: { cacheRead: 2000, key: 'M', runtime: 'rtM', stored: 'storedM' }, // pane without the chip
+  n: { cacheRead: 4000, key: 'N', runtime: 'rtN', stored: 'storedN' }, // out-of-order reads
   l: {
     // subagents: two children (2,000 + 1,000 tokens), one grandchild (500), and an
     // unrelated session that must never be counted.
@@ -1096,6 +1110,34 @@ edgeAssert(
   `expected ${(rowM + 4000).toLocaleString('en-US')} in "${paneM().slice(0, 100)}"`
 )
 
+// N — OUT-OF-ORDER READS (the reported "refresh shows the wrong values"): reads are async,
+// so a slow one issued first can land AFTER a newer one. Without a guard the old response
+// painted its figures — another session's, or this session's stale row — into the current
+// view and stayed there until the next read.
+const ROW = (input, cost) => [{ cache_read_tokens: 0, cache_write_tokens: 0, estimated_cost_usd: cost, id: WINDOWS.n.stored, input_tokens: input, message_count: 1, output_tokens: 0, resolved_id: WINDOWS.n.runtime }]
+
+// Call 1 is the mount's own read (immediate); call 2 is the first refresh — SLOW, and
+// carrying a stale, much larger figure; call 3 is the second refresh, immediate. The stale
+// response therefore lands LAST, which is the out-of-order case that used to win.
+globalThis.__stReadRows_N = [ROW(5500, 1.3718), ROW(999999, 9.99), ROW(222, 0.02)]
+globalThis.__stReadDelays_N = [0, 600, 0]
+
+const winN = await mount(toModule(code, 'plugin-winN.mjs', stubPathFor(WINDOWS.n)))
+const chipN = () => winN.container?.textContent ?? ''
+const panelN = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)
+const refreshN = () => panelN()?.querySelector('button')?.click()
+
+await wait(300) // the mount's own read settles
+refreshN() // read 2: in flight, slow, stale
+await wait(120)
+refreshN() // read 3: issued later, resolves immediately
+await wait(900) // ...and read 2 arrives after it
+
+edgeAssert(
+  'a stale response is dropped',
+  chipN().includes('222') && !chipN().includes('999,999'),
+  `expected the newer read to stand — got "${chipN().trim().slice(0, 60)}"`
+)
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
 for (const payload of [undefined, null, {}, { usage: null }, { usage: { total: 'x' } }, { usage: { context_max: -5, context_percent: 'y', context_used: 'z' } }, { usage: { total: 1e15 } }]) {
   globalThis['__stEvents_A']['session.usage']({ payload, session_id: WINDOWS.a.runtime, type: 'session.usage' })

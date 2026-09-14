@@ -90,6 +90,11 @@ Built and iterated on 2026-09-14. Never tagged, never published.
   rejection left the row `—` until the next turn. The pull is now retried briefly, re-asked
   by the poll while the window is still unknown, and re-asked whenever the window's
   session changes (including a resume whose runtime id arrives after the switch).
+- **A refresh could show the wrong figures** — reads are async and carried no request guard, so
+  a slow read issued earlier (a refresh racing the poll, or a session switch mid-read) could land
+  after a newer one and paint its row into the current view, where it stayed until the next read.
+  Loads and context pulls are now tagged and applied only when they are still the newest request
+  *and* still belong to the session on screen; a stale response is discarded, not displayed.
 - **The context row could stay blank** — it only painted from payloads pushed during a
   turn, so a panel opened on an idle session (or right after the plugin reloaded) showed
   `—` until the next call, and refreshing could not help because the stored row carries

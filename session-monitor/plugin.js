@@ -181,6 +181,11 @@ function useMonitor() {
   const liveAnchor = useRef(0) // counter value the current base row already includes
   const rowTotalRef = useRef(0) // stored total at the last read — detects a row advance
   const tickSeen = useRef(false) // has this plugin lifetime seen the counter's baseline yet
+  // In-flight request guards. Reads are async, and a slow one can land AFTER a newer one
+  // (a refresh racing the poll, or a session switch mid-read) — which painted the previous
+  // session's row into the current one: the "refresh shows the wrong values" report.
+  const loadSeq = useRef(0)
+  const pullSeq = useRef(0)
   const chars = useRef(0) // characters streamed since the last accounted call
   const chunks = useRef(0) // chunks since the last accounted call
   const lastChunkAt = useRef(0) // arrival time of the previous chunk
@@ -343,8 +348,14 @@ function useMonitor() {
       if (typeof host.request !== 'function') return
       if (!runtimeId) return // a draft has no session to ask about
 
+      const seq = ++pullSeq.current
+      const wantRuntime = runtimeId // the session this pull was issued FOR
+
       try {
-        const breakdown = await host.request('session.context_breakdown', { session_id: runtimeId })
+        const breakdown = await host.request('session.context_breakdown', { session_id: wantRuntime })
+
+        // Only the newest pull for the session still on screen may paint.
+        if (seq !== pullSeq.current || runtimeRef.current !== wantRuntime) return
 
         takeContext(breakdown)
       } catch {
@@ -395,14 +406,22 @@ function useMonitor() {
       return
     }
 
+    const seq = ++loadSeq.current
+    const wantStored = storedId // the session this read was issued FOR
+
     // Snapshot BEFORE the await so growth during the fetch is not lost.
     const liveNow = live.current
 
     try {
       const page = await host.listPersistedSessions(null, { limit: 500, profile })
-      const row = (page?.sessions ?? []).find(candidate => matches(candidate, storedId))
 
-      setSubagents(row ? descendantsOf(page, storedId) : null)
+      // Drop a superseded or now-unrelated response BEFORE touching any state: the window
+      // may have moved on while this read was in flight.
+      if (seq !== loadSeq.current || storedRef.current !== wantStored) return
+
+      const row = (page?.sessions ?? []).find(candidate => matches(candidate, wantStored))
+
+      setSubagents(row ? descendantsOf(page, wantStored) : null)
 
       if (row) {
         const rowTotal = tokenCount(row)
@@ -451,9 +470,9 @@ function useMonitor() {
 
       setRowState('unavailable')
     } catch (error) {
-      // A failed read must not touch the anchor either: the live term keeps the
-      // tokens it has already counted.
-      setRowState('unavailable')
+      // A failed read must not touch the anchor either, and must not overwrite what a
+      // newer read has already applied.
+      if (seq === loadSeq.current && storedRef.current === wantStored) setRowState('unavailable')
     }
   }, [profile, storedId])
 
