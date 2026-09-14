@@ -38,11 +38,13 @@
  * A stray `~` marks the number only while streamed-text estimate is in play — it
  * is the one part that is an estimate; everything else is Hermes' own count.
  *
- * WHERE IT RENDERS — two contributions: a status-bar READOUT (the glance figure, no
- * click target) and a SIDEBAR PANE (`area: 'panes'`, a tab beside SESSIONS, toggled
- * from the zone menu or the command palette) carrying the detail view. Each view runs
- * the panel's own instance, because a pane's tab unmounts with the tab and a
- * status-bar item can be hidden: neither may depend on the other being mounted.
+ * WHERE IT RENDERS — a status-bar FIGURE and a SIDEBAR PANE (`area: 'panes'`, a tab
+ * beside SESSIONS, toggled from the zone menu or the command palette) carrying the
+ * detail view. Clicking the figure reveals that same pane (`host.revealPane`, which
+ * addresses contributed panes as `<pluginId>:<paneId>`) — one detail surface, two
+ * doors, never a second copy of the panel. Each view runs the panel's own instance,
+ * because a pane's tab unmounts with the tab and a status-bar item can be hidden:
+ * neither may depend on the other being mounted.
  *
  * PANE — titled "Session monitor" with a refresh button (re-reads the stored row
  * on click): the CONTEXT window (used / max + a fill bar)
@@ -126,6 +128,8 @@ const RefreshButton = typeof Button === 'function' ? Button : 'button'
 const RefreshIcon = icons?.RefreshCw ?? null
 /** Chars per token for the streamed-text term. English prose ≈ 4; code/JSON runs denser. */
 const CHARS_PER_TOKEN = 4
+/** Contributed panes are addressed as `<pluginId>:<paneId>` by the host APIs. */
+const PANE_ID = `${ID}:pane`
 
 const n = value => (typeof value === 'number' ? value : Number(value) || 0)
 /** Full digits, grouped — never k/M. Matches Hermes' own `/usage` + insights output. */
@@ -601,16 +605,27 @@ function useMonitor() {
  * the sidebar pane (`MonitorPane`), which is where a popover used to open.
  */
 function Chip() {
-  const { base, chipTotal, onRefresh, ready, refreshing, rowState, streamed, subagentCost, subagentTokens } = useMonitor()
+  const { base, chipTotal, ready, streamed, subagentCost, subagentTokens } = useMonitor()
+
+  // Clicking the figure opens the detail view — the SAME sidebar pane, revealed in
+  // place, rather than a second copy of it: one detail surface, two doors. Older
+  // desktops have no `revealPane`, where the figure stays a plain readout.
+  const openPane = () => {
+    if (typeof host.revealPane === 'function') host.revealPane(PANE_ID)
+  }
 
   const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
   const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(2)}` : ''
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
-  return jsx('span', {
+  return jsx('button', {
+    'aria-label': 'Show the session monitor details',
     'data-slot': 'session-monitor-chip',
+    onClick: openPane,
+    title: 'Session monitor — open the details',
+    type: 'button',
     className:
-      'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums',
+      'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
     children: [
       // Fixed-width estimate slot: the marker appearing and disappearing used
       // to change the chip's width and shove the neighbouring status items.

@@ -144,6 +144,9 @@ export const host = {
     model: modelAtom
   },
   notify: () => 'toast', notifyError: () => 'toast', navigate: () => {},
+  revealPane: id => {
+    ;(globalThis.__stRevealed ??= []).push(id)
+  },
   // MANY handlers per event, like the app: the built-in status items and every view
   // of this plugin share these streams. Storing one handler per type made the newest
   // subscriber steal the events from the older one — the chip went deaf as soon as
@@ -672,6 +675,21 @@ if (!live.failures.length) {
     if (pane.data?.placement !== 'left') throw new Error(`pane placement is "${pane.data?.placement}", expected the left column`)
     if (pane.data?.dock?.pane !== 'sessions') throw new Error(`pane docks into "${pane.data?.dock?.pane}", expected the sessions zone`)
     if (document.querySelector('[data-stub="popover-content"]')) throw new Error('a popover is back — the details belong in the pane')
+
+    // SECOND DOOR contract: clicking the status-bar figure reveals that same pane
+    // (contributed panes are addressed as `<pluginId>:<paneId>`), so the details are
+    // one surface with two ways in — not a second copy of the panel in a popover.
+    const chipBtn = live.container.querySelector('[data-slot="session-monitor-chip"]')
+
+    if (!chipBtn) throw new Error('the status-bar figure is missing')
+    if (chipBtn.tagName !== 'BUTTON') throw new Error(`the figure is a ${chipBtn.tagName}, so it cannot open the details`)
+
+    globalThis.__stRevealed = []
+    chipBtn.click()
+
+    if (!(globalThis.__stRevealed ?? []).includes('session-monitor:pane')) {
+      throw new Error(`clicking the figure revealed ${JSON.stringify(globalThis.__stRevealed)} instead of the details pane`)
+    }
 
     const panelEl = document.querySelector('[data-slot="session-monitor-panel"]')
 

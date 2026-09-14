@@ -35,6 +35,11 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ### Changed
 
+- **The status-bar figure opens the details**: clicking it reveals the same sidebar pane
+  (`host.revealPane`, addressed as `<pluginId>:<paneId>`) instead of a second copy of the
+  panel — one detail surface with two doors. Older desktops without the API leave the figure
+  as a plain readout.
+
 - **The status-bar figure reads `tokens · hit rate · cost`**, without the `Σ` prefix: how much,
   how well it cached, then what it cost.
 
