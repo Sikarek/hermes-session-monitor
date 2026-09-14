@@ -1012,10 +1012,6 @@ function OverviewPane() {
           )
         )
       }),
-      jsx('p', {
-        className: 'text-[0.6875rem] text-muted-foreground',
-        children: 'Every session in this profile — subagents included — live while they run.'
-      })
     ]
   })
 }
