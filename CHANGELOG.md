@@ -67,6 +67,11 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 - **An idle window could inherit a busy session's numbers** — strict per-window
   attribution (runtime id or stored id only) replaced the fused
   `host.state.focusedUsage` atom and the "accept unknown ids while busy" fallback.
+- **The counter could freeze after a resume** — a resumed session runs under a new
+  runtime id while the window may still hold the previous one, so every live tick
+  was rejected until the window's own state refreshed by hand (the "it only updates
+  when I switch tabs and back" report). `session.info` now teaches the chip its
+  session's current runtime id, checked after the stored and runtime ids.
 - **The context bar rendered empty** — `jsx(type, props, child)`; in the automatic
   runtime the third argument is the **key**, not children.
 - **The README's own verification block** promised output its commands could not
@@ -91,6 +96,9 @@ below are the release-level summary.
   not restart the count at zero.
 - **Per-session isolation** — a second window, another session, or a subagent can
   never contribute to this chip.
+- **The context window follows the model** — switching models clears the stale
+  limit (the row reads `—`) and triggers a fresh read, instead of leaving the
+  previous model's window on screen.
 - **Refresh button** in the panel header — re-reads the stored session row
   immediately instead of waiting for the next poll, with the row's spinner while
   the read is in flight.

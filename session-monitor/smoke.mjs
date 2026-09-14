@@ -65,11 +65,27 @@ const stubFor = w => {
   const stored = JSON.stringify(w.stored)
   const cacheRead = String(w.cacheRead)
   const LIST_CALLS = JSON.stringify(`__stListCalls_${w.key}`)
+  const SET_MODEL = JSON.stringify(`__stSetModel_${w.key}`)
   const tail = names.filter(name => !KNOWN.includes(name)).map(name => `export const ${name} = noop`).join('\n')
 
   return `
-const atomImpl = value => ({ get: () => value, set: () => {}, subscribe: () => () => {} })
+const atomImpl = value => {
+  const listeners = new Set()
+
+  return {
+    get: () => value,
+    set: next => {
+      value = next
+      listeners.forEach(listener => listener(value))
+    },
+    subscribe: listener => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+  }
+}
 const atom = atomImpl
+const modelAtom = atom(${JSON.stringify('deepseek/deepseek-v4.1-flash')})
 const noop = () => null
 const EVENTS = (globalThis[${key}] = {})
 
@@ -82,7 +98,7 @@ export const host = {
     focusedStoredSessionId: atom(${stored}),
     focusedUsage: atom(null),
     gateway: atom('open'),
-    model: atom('deepseek/deepseek-v4.1-flash')
+    model: modelAtom
   },
   notify: () => 'toast', notifyError: () => 'toast', navigate: () => {},
   onEvent: (type, handler) => { EVENTS[type] = handler; return () => delete EVENTS[type] },
@@ -117,11 +133,26 @@ export const host = {
   }
 }
 
-export const useValue = value => (value && typeof value.get === 'function' ? value.get() : value)
+// Subscribing hop, like the app's useStore: without it a mutated atom would never
+// re-render the chip and every change-propagation contract would be untestable.
+globalThis[${SET_MODEL}] = next => modelAtom.set(next)
+export const useValue = value => {
+  if (!value || typeof value.get !== 'function') return value
+
+  const [snapshot, setSnapshot] = useState(value.get())
+
+  useEffect(() => {
+    setSnapshot(value.get())
+
+    return value.subscribe ? value.subscribe(setSnapshot) : undefined
+  }, [value])
+
+  return snapshot
+}
 export const usePluginI18n = () => (key, ...args) => [key, ...args].join(' ')
 export const compactNumber = value => String(value ?? 0)
 export const cn = (...args) => args.filter(Boolean).join(' ')
-import { createElement, useEffect } from 'react'
+import { createElement, useEffect, useState } from 'react'
 export const Button = ({ children, ...props }) => createElement('button', props, children)
 export const Popover = ({ children, onOpenChange }) => {
   useEffect(() => { onOpenChange?.(true) }, [])
@@ -440,6 +471,51 @@ if (!live.failures.length) {
 
     if (!headerText.startsWith('Session monitor')) {
       throw new Error(`the header is not title-then-button: "${headerText.slice(0, 60)}"`)
+    }
+
+    // RESUME CONTRACT: a resumed session runs under a NEW runtime id while this
+    // window may still hold the previous one. Its own session.info teaches the chip
+    // that id, so the ticks that follow are adopted instead of discarded — the bug
+    // behind "it only updates after I switch tabs and back".
+    const numOf = text => Number((text.match(/[\d,]+/)?.[0] ?? '0').replaceAll(',', ''))
+    const beforeResume = container.textContent ?? ''
+    const resumedRuntime = 'rtA-resumed'
+
+    globalThis['__stEvents_A']['session.info']({
+      payload: { stored_session_id: WINDOWS.a.stored, usage: { context_max: 200000, context_percent: 42, context_used: 84000 } },
+      session_id: resumedRuntime,
+      type: 'session.info'
+    })
+    await wait(150)
+    globalThis['__stEvents_A']['session.usage']({
+      payload: { usage: { total: 9000 } },
+      session_id: resumedRuntime,
+      type: 'session.usage'
+    })
+    await wait(250)
+
+    const afterResume = container.textContent ?? ''
+
+    if (!(numOf(afterResume) > numOf(beforeResume))) {
+      throw new Error(`a tick from the resumed runtime id was rejected: "${beforeResume.trim().slice(0, 40)}" → "${afterResume.trim().slice(0, 40)}"`)
+    }
+
+    // MODEL CONTRACT: the window belongs to the model. A switch clears the stale
+    // limit (the row shows —) and triggers a fresh read; leaving the previous
+    // model's window on screen would misreport how full the context is.
+    const readsBeforeModel = globalThis.__stListCalls_A ?? 0
+
+    globalThis.__stSetModel_A?.('anthropic/claude-sonnet-5')
+    await wait(300)
+
+    const panelAfterModel = document.querySelector('[data-slot="session-monitor-panel"]')?.textContent ?? ''
+
+    if (!panelAfterModel.includes('Context—')) {
+      throw new Error(`a model switch left the old context window on screen: "${panelAfterModel.slice(0, 80)}"`)
+    }
+
+    if ((globalThis.__stListCalls_A ?? 0) <= readsBeforeModel) {
+      throw new Error('a model switch did not trigger a fresh read of the stored row')
     }
 
     // The hover tooltip was removed on request (the click panel carries the

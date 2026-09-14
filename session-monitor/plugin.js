@@ -13,8 +13,9 @@
  *    are process-local and start at zero on resume, so a live-only figure resets.
  *
  *  · COMPLETED CALLS — `session.usage` events **attributed strictly** to this
- *    window's focused session (runtime id or stored id), minus the value captured
- *    when the base was read. The fused `host.state.focusedUsage` atom is NOT used:
+ *    window's focused session (runtime id, stored id, or the runtime id learned
+ *    from that session's own `session.info` — the resume case), minus the value
+ *    captured when the base was read. The fused `host.state.focusedUsage` atom is NOT used:
  *    the app merges rather than replaces that store, so an idle window could
  *    inherit a busy session's numbers.
  *
@@ -40,7 +41,8 @@
  * percentages: the partition is shown by the Total itself.
  *
  * WHAT IT READS — the complete surface, verifiable by reading this file:
- *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile
+ *   · host.state: focusedStoredSessionId, focusedSessionId, focusedSessionProfile,
+ *     model
  *   · host.onEvent: session.usage, session.info, message.delta, reasoning.delta
  *   · host.listPersistedSessions(): the focused profile's session rows, refreshed
  *     every POLL_MS and at turn end
@@ -92,6 +94,8 @@ function Chip() {
   const storedId = useValue(host.state.focusedStoredSessionId)
   const runtimeId = useValue(host.state.focusedSessionId)
   const profile = useValue(host.state.focusedSessionProfile)
+  // The model decides the context WINDOW, so a switch has to invalidate it.
+  const model = useValue(host.state.model)
 
   const [base, setBase] = useState(null) // stored row buckets
   // 'pending' until the row read settles. Without this the chip painted
@@ -112,6 +116,13 @@ function Chip() {
   const frame = useRef(0)
   const storedRef = useRef(storedId)
   const runtimeRef = useRef(runtimeId)
+  // Runtime id learned from this session's own `session.info` (payload carries the
+  // STORED id, so this is proof, not a guess). Needed because a resumed session
+  // runs under a NEW runtime id while this window may still hold the previous one:
+  // without it, every live tick is rejected and the counter freezes until the
+  // window's own atoms refresh (which is what "it only updates when I switch tabs"
+  // was). Cleared whenever the window's own ids change.
+  const aliasRef = useRef(null)
   // Events for one chat arrive under DIFFERENT ids depending on the emitter
   // (observed: usage/message.delta on one, thinking.delta/session.info on
   // another), so match an alias set rather than a single id.
@@ -159,7 +170,8 @@ function Chip() {
     // session's chip count this session's tokens. Verified live: the focused
     // runtime id DOES match its own usage/reasoning events (focusedRuntime
     // "0734c261" == sid "0734c261").
-    const forFocused = id => Boolean(id) && (id === runtimeRef.current || id === storedRef.current)
+    const forFocused = id =>
+      Boolean(id) && (id === runtimeRef.current || id === storedRef.current || id === aliasRef.current)
 
     const countText = event => {
       if (!forFocused(event.session_id)) return
@@ -211,6 +223,12 @@ function Chip() {
       // Attributed by STORED id: this event carries no runtime id of its own.
       host.onEvent('session.info', event => {
         if (event.payload?.stored_session_id !== storedRef.current) return
+
+        // Same session, possibly a new runtime id (resume/reconnect): adopt it, so
+        // the live ticks that follow are attributed instead of discarded.
+        if (typeof event.session_id === 'string' && event.session_id) {
+          aliasRef.current = event.session_id
+        }
 
         takeContext(event.payload?.usage)
       }),
@@ -329,6 +347,7 @@ function Chip() {
     chars.current = 0
     chunks.current = 0
     best.current = 0
+    aliasRef.current = null
     setBase(null)
     setCtx(null)
     setRowState('pending')
@@ -342,9 +361,23 @@ function Chip() {
     live.current = 0
     liveAtFetch.current = 0
     chars.current = 0
+    aliasRef.current = null
     setCtx(null)
     void load()
   }, [load, runtimeId])
+
+  // The context window belongs to the model: on a switch the old limit must not
+  // linger, so clear it (the row shows — for a moment) and re-read. The next usage
+  // payload paints the new window; the poll alone would not, since the row carries
+  // no context fields.
+  const modelRef = useRef(model)
+  useEffect(() => {
+    if (modelRef.current === model) return
+
+    modelRef.current = model
+    setCtx(null)
+    void refresh()
+  }, [model, refresh])
 
   // Turn end is when the row is written — pick it up, and stop polling while working.
   useEffect(() => {

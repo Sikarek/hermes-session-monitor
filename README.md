@@ -78,7 +78,8 @@ The total is assembled from three sources, in this order:
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are excluded by design** — their tokens live in their own session rows, which the parent row does not include. This matches what `/usage` reports.
-- **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those same two event payloads, so it shows `—` until the first one arrives and a `~` when the backend marks the figure as estimated.
+- **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those same two event payloads, so it shows `—` until the first one arrives and a `~` when the backend marks the figure as estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
+- **Resumed sessions re-attach on their own** — a resumed session runs under a new runtime id; its own `session.info` (which carries the stored id, so it is proof rather than a guess) teaches the chip that id, and the live ticks are attributed again. Without that step the counter would freeze until the window's own state refreshed.
 
 ## Cost
 
@@ -98,13 +99,14 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 ## Privacy & security
 
-The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — three state atoms, four event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
+The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — four state atoms, four event subscriptions and one session read — is listed below and can be verified line by line: the source ships unminified.
 
 | Host call                             | Purpose                                                     |
 | ------------------------------------- | ----------------------------------------------------------- |
 | `host.state.focusedStoredSessionId` | Which session this window is showing                        |
 | `host.state.focusedSessionId`       | Its runtime id                                              |
 | `host.state.focusedSessionProfile`  | Its profile                                                 |
+| `host.state.model`                  | The model in use — the context window belongs to it          |
 | `host.onEvent('session.usage')`     | Completed-call token totals and the context window          |
 | `host.onEvent('session.info')`      | The same usage snapshot when a session is opened or resumed |
 | `host.onEvent('message.delta')`     | The answer's streamed text (measured, not kept)             |
@@ -137,6 +139,7 @@ grep -oE "host\.(onEvent\('[a-z.]+'|state\.[a-zA-Z]+|listPersistedSessions)" plu
 #    → 1 host.onEvent('session.usage'
 #    → 1 host.state.focusedSessionId
 #    → 1 host.state.focusedSessionProfile
+#    → 1 host.state.model
 #    → 1 host.state.focusedStoredSessionId
 #    → 2 host.state.focusedUsage             (2 comment mentions only: both record
 #                                             that the fused atom is deliberately
