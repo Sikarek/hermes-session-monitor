@@ -11,28 +11,28 @@ A live token, context-window, cost and cache-hit monitor for the **Hermes Deskto
 Click the chip for the breakdown:
 
 ```
-Session monitor                            ↻      refresh (re-reads the stored row)
-Context             421,888 / 1,000,000 · 42%     the window in use
-█████████████████░░░░░░░░░░░░░░░░░░░░░░░          fill bar = share of the window
-Cache hit                 196,470,400     prompt tokens served from the provider cache
-Cache miss                    353,194     uncached input
-Output                        415,353     everything the model generated
-Total                     197,238,947     the three rows above, added up
-──────────────────────────────────────────────
-Cache hit rate                99.82%
-Cost                             $1.78
+Session monitor                                        ↻   the refresh button, at the top right
+Context                        421,888 / 1,000,000 · 42%   the window in use
+████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   fill = the share of the window in use
+Cache hit                                    196,470,400   prompt tokens served from — or written into — the cache
+Cache miss                                       353,194   uncached input
+Output                                           415,353   everything the model generated, reasoning included
+Total                                        197,238,947   the three rows above, added up
+────────────────────────────────────────────────────────
+Cache hit rate                                    99.82%   two decimals; Hermes' own item rounds to a whole percent
+Cost                                               $1.78   an estimate from published rates, not an invoice
 ```
 
 ## What it shows
 
-| Row                      | Meaning                                                                                                                                        |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Context**         | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |
-| **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                           |
-| **Cache miss**     | Uncached input tokens.                                                                                                                         |
-| **Output**         | Every token the model generated, reasoning included.                                                                                           |
-| **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%". |
-| **Cost**           | The cost Hermes recorded for this session — see [Cost](#cost) for how it is derived and how accurate it is.                                     |
+| Row                      | Meaning                                                                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Context**        | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |
+| **Cache hit**      | Prompt tokens served from — or written into — the provider's cache (`cache_read + cache_write`).                                               |
+| **Cache miss**     | Uncached input tokens.                                                                                                                             |
+| **Output**         | Every token the model generated, reasoning included.                                                                                               |
+| **Cache hit rate** | `cache_read ÷ prompt tokens`, to two decimals. Hermes' own status-bar item rounds this to a whole percent, which flattens 99.79% to "100%".     |
+| **Cost**           | The cost Hermes recorded for this session — see[Cost](#cost) for how it is derived and how accurate it is.                                         |
 
 The three token rows **partition** the session total: `cache hit + cache miss + output` equals the **Total** row shown beneath them exactly, so no token is counted in two rows. The rows carry no percentages — the Total beneath them states the partition, and the cache ratio is the **Cache hit rate** figure below the rule.
 
@@ -56,23 +56,23 @@ No build step and no backend changes. The app watches that folder, so the chip a
 
 ## Usage
 
-| Action           | Where                                                                |
-| ---------------- | -------------------------------------------------------------------- |
-| Chip             | Right end of the status bar                                          |
-| Detail panel     | Click the chip                                                       |
+| Action           | Where                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Chip             | Right end of the status bar                                                                                            |
+| Detail panel     | Click the chip                                                                                                         |
 | Refresh          | **↻** at the top right of the panel — re-reads the stored session row now instead of waiting for the next poll |
-| Hide / show      | Right-click the status bar → **Session monitor**              |
-| Disable entirely | Settings → Skills → Plugins → *Session Monitor* → Desktop switch |
+| Hide / show      | Right-click the status bar →**Session monitor**                                                                 |
+| Disable entirely | Settings → Skills → Plugins →*Session Monitor* → Desktop switch                                                  |
 
 ## How it works
 
 The total is assembled from three sources, in this order:
 
-| Term            | Source                                                                                                       | Survives a restart                                         |
-| --------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
-| Base total      | `host.listPersistedSessions()` → `GET /api/profiles/sessions` → the profile's `state.db` session row | Yes — it is the stored row                                |
+| Term            | Source                                                                                                                                                                                                                         | Survives a restart                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Base total      | `host.listPersistedSessions()` → `GET /api/profiles/sessions` → the profile's `state.db` session row                                                                                                                   | Yes — it is the stored row                                |
 | Completed calls | `session.usage` events, attributed strictly to this window's focused session. The payload is that process's cumulative counter, so the first tick of a plugin lifetime is a **baseline** and growth is counted from it | No (process-local), but only ever added on top of the base |
-| Live text       | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream                        | No — superseded by the next completed call                |
+| Live text       | `message.delta` (answer) and `reasoning.delta` (thinking), counted as they stream                                                                                                                                          | No — superseded by the next completed call                |
 
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
@@ -103,17 +103,17 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 The plugin displays numbers the app already has. It makes **no network requests of its own, writes nothing, and never reads your conversation.** The complete surface — four state atoms, four event subscriptions and two reads — is listed below and can be verified line by line: the source ships unminified.
 
-| Host call                             | Purpose                                                     |
-| ------------------------------------- | ----------------------------------------------------------- |
-| `host.state.focusedStoredSessionId` | Which session this window is showing                        |
-| `host.state.focusedSessionId`       | Its runtime id                                              |
-| `host.state.focusedSessionProfile`  | Its profile                                                 |
-| `host.state.model`                  | The model in use — the context window belongs to it          |
-| `host.onEvent('session.usage')`     | Completed-call token totals and the context window          |
-| `host.onEvent('session.info')`      | The same usage snapshot when a session is opened or resumed |
-| `host.onEvent('message.delta')`     | The answer's streamed text (measured, not kept)             |
-| `host.onEvent('reasoning.delta')`   | The reasoning's streamed text (measured, not kept)          |
-| `host.listPersistedSessions()`      | The focused profile's session rows — the figures displayed |
+| Host call                                                   | Purpose                                                                                                                             |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `host.state.focusedStoredSessionId`                       | Which session this window is showing                                                                                                |
+| `host.state.focusedSessionId`                             | Its runtime id                                                                                                                      |
+| `host.state.focusedSessionProfile`                        | Its profile                                                                                                                         |
+| `host.state.model`                                        | The model in use — the context window belongs to it                                                                                |
+| `host.onEvent('session.usage')`                           | Completed-call token totals and the context window                                                                                  |
+| `host.onEvent('session.info')`                            | The same usage snapshot when a session is opened or resumed                                                                         |
+| `host.onEvent('message.delta')`                           | The answer's streamed text (measured, not kept)                                                                                     |
+| `host.onEvent('reasoning.delta')`                         | The reasoning's streamed text (measured, not kept)                                                                                  |
+| `host.listPersistedSessions()`                            | The focused profile's session rows — the figures displayed                                                                         |
 | `host.request('session.context_breakdown', {session_id})` | The context window for THIS session's id (an estimate from the live prompt + tools + transcript: no provider call, no cache impact) |
 
 **It does not:**
@@ -222,22 +222,22 @@ context payload or text is refused; a tick from a resumed runtime id IS adopted
 
 Edge cases — each is a situation the chip meets in the field:
 
-| Situation | What must happen |
-|---|---|
-| A draft with no session yet (`null` ids) | Renders, reports that no stored row exists |
-| The stored-row read throws (backend hiccup) | Live counting keeps working |
-| An older build without `host.listPersistedSessions` | Mounts and degrades, never throws |
-| An older SDK without `Button` or the icon set | Still renders a working refresh control (plain button + `↻`) |
-| A provider that bills cache writes | `Cache hit` = read + write, and the total includes both |
-| A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no `NaN`, no `undefined` |
-| A session switch inside one window | The new session takes over; the abandoned one stops counting |
-| A model switch | The context window clears and a fresh read is triggered |
-| A panel opened on an idle session, nothing pushed yet | The window is fetched on demand instead of staying blank |
-| A session the gateway no longer holds in memory (detached / reaped) | The pull is rejected, one retry + the poll keep asking, and the row says `—` rather than a stale number; it fills in when the session is live again |
-| A session switch, or a resume whose runtime id arrives late | The window is re-pulled for the new session id |
-| A plugin mounted mid-session (a process cumulative far above the row) | The total stays correct — the first tick is a baseline, not spend |
-| A manual refresh (or the 15 s poll) while the model works | The live term survives; the counter keeps climbing, and a row advance is not counted twice |
-| A deliberately broken copy of the plugin | The error boundary contains it; the app root is never reached |
+| Situation                                                                  | What must happen                                                                                                                                      |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A draft with no session yet (`null` ids)                                 | Renders, reports that no stored row exists                                                                                                            |
+| The stored-row read throws (backend hiccup)                                | Live counting keeps working                                                                                                                           |
+| An older build without`host.listPersistedSessions`                       | Mounts and degrades, never throws                                                                                                                     |
+| An older SDK without`Button` or the icon set                             | Still renders a working refresh control (plain button +`↻`)                                                                                        |
+| A provider that bills cache writes                                         | `Cache hit` = read + write, and the total includes both                                                                                             |
+| A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no`NaN`, no `undefined`                                                                                             |
+| A session switch inside one window                                         | The new session takes over; the abandoned one stops counting                                                                                          |
+| A model switch                                                             | The context window clears and a fresh read is triggered                                                                                               |
+| A panel opened on an idle session, nothing pushed yet                      | The window is fetched on demand instead of staying blank                                                                                              |
+| A session the gateway no longer holds in memory (detached / reaped)        | The pull is rejected, one retry + the poll keep asking, and the row says`—` rather than a stale number; it fills in when the session is live again |
+| A session switch, or a resume whose runtime id arrives late                | The window is re-pulled for the new session id                                                                                                        |
+| A plugin mounted mid-session (a process cumulative far above the row)      | The total stays correct — the first tick is a baseline, not spend                                                                                    |
+| A manual refresh (or the 15 s poll) while the model works                  | The live term survives; the counter keeps climbing, and a row advance is not counted twice                                                            |
+| A deliberately broken copy of the plugin                                   | The error boundary contains it; the app root is never reached                                                                                         |
 
 Every assertion above was mutation-checked: reintroducing each bug makes the suite
 fail with a message naming it (verified for the undefined identifier, the
@@ -248,8 +248,6 @@ old window on screen).
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-
 
 ## Why this exists
 
