@@ -733,9 +733,26 @@ function useMonitor() {
   // both cache buckets (`CanonicalUsage.prompt_tokens`).
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
 
+  // LIVE COST. The recorded cost only moves when the row is written (turn end) or re-read (the
+  // 15 s poll), so a turn in progress showed a flat figure while the tokens climbed. Estimate the
+  // in-flight part at the row's own blended rate — its cost over its tokens — mark it with `~`,
+  // and drop the marker the moment a read brings the recorded value: the estimate is a bridge to
+  // the real number, never a replacement for it.
+  //
+  // The blended rate UNDERSTATES an output-heavy call (cache-read tokens cost a fraction of
+  // generated ones, and the row carries no per-bucket cost), so the estimate lags rather than
+  // overshoots, and each read corrects it.
+  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
+  const liveTokens = grown + streamed
+  const rate = base && base.total > 0 && mainCost > 0 ? mainCost / base.total : 0
+  const costLive = rate > 0 && liveTokens > 0
+  const costShown = costLive ? mainCost + liveTokens * rate + subagentCost : mainCost + subagentCost
+
   return {
     base,
     chipTotal,
+    costLive,
+    costShown,
     statsRuntime: runtimeId,
     ctx,
     grown,
@@ -759,10 +776,11 @@ function useMonitor() {
  */
 function Chip() {
   const vm = useMonitor()
-  const { base, chipTotal, ready, streamed, subagentCost, subagentTokens } = vm
+  const { base, chipTotal, costLive, costShown, ready, streamed, subagentCost, subagentTokens } = vm
 
-  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
-  const costLabel = mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(4)}` : ''
+  // `costShown` is the recorded cost, or that cost plus the in-flight part at the row's blended
+  // rate while a call is running (`costLive` marks the estimate).
+  const costLabel = costShown > 0 ? `${costLive ? '~' : ''}$${costShown.toFixed(4)}` : ''
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
   const trigger = jsx('button', {
@@ -821,7 +839,7 @@ function MonitorPane() {
  */
 function TokenPanel({ stats }) {
 
-  const { base, ctx, grown, onPull, onRefresh, refreshing, rowState, statsRuntime, streamed, subagentCost, subagents, subagentTokens, total } = stats
+  const { base, ctx, costLive, costShown, grown, onPull, onRefresh, refreshing, rowState, statsRuntime, streamed, subagentCost, subagents, subagentTokens, total } = stats
   // Show a window only while its stamp matches the chat on screen; otherwise the row reads "—"
   // until THIS session reports its own — which is what keeps one session's window from appearing
   // under another session's name.
@@ -970,7 +988,7 @@ function TokenPanel({ stats }) {
             jsx('span', {
               className: 'tabular-nums text-foreground',
               children:
-                mainCost + subagentCost > 0 ? `$${(mainCost + subagentCost).toFixed(4)}` : '—'
+                costShown > 0 ? `${costLive ? '~' : ''}$${costShown.toFixed(4)}` : '—'
             })
           ]})
         ]

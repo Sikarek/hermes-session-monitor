@@ -98,6 +98,8 @@ input × in_rate + output × out_rate + cache_read × read_rate + cache_write ×
 
 and the result is stored per session. Rates come from Hermes' price map — `official_docs_snapshot` for Anthropic and OpenAI, `provider_models_api` (models.dev, cached) for OpenRouter and DeepSeek — with per-request prices and context tiers where a provider publishes them.
 
+**Live estimate.** The recorded figure only changes when the row is written (turn end) or re-read (the 15-second poll), so a turn in progress used to show a flat cost while the tokens climbed. While a call is in flight the in-flight tokens are now priced at the row's own blended rate — its cost over its tokens — and the figure carries a `~`; the marker goes as soon as the recorded value accounts for them. That rate **understates an output-heavy call** (cache-read tokens cost a fraction of generated ones, and the row carries no per-bucket cost), so the estimate lags rather than overshoots, and every read corrects it.
+
 **Accuracy.** Three consequences follow from that design:
 
 - The value is an **estimate from published rates**, not the provider's invoice — they can differ.

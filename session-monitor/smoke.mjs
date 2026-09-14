@@ -742,13 +742,13 @@ if (!live.failures.length) {
 
     // PRECISION contract: every cost is printed with four decimals, in the panel and in
     // the chip (a 2-decimal figure reads like a rounded bill; four show the stored value).
-    const panelCost = (panelEl.textContent ?? '').match(/Cost\$(\d+\.\d+)/)?.[1] ?? ''
+    const panelCost = (panelEl.textContent ?? '').match(/Cost~?\$(\d+\.\d+)/)?.[1] ?? ''
 
     if (!/^\d+\.\d{4}$/.test(panelCost)) {
       throw new Error(`the panel's cost should carry four decimals — got "$${panelCost || 'nothing'}"`)
     }
 
-    const chipCost = (live.container.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? '').match(/\$(\d+\.\d+)/)?.[1] ?? ''
+    const chipCost = (live.container.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? '').match(/~?\$(\d+\.\d+)/)?.[1] ?? ''
 
     if (!/^\d+\.\d{4}$/.test(chipCost)) {
       throw new Error(`the chip's cost should carry four decimals — got "$${chipCost || 'nothing'}"`)
@@ -804,7 +804,8 @@ if (!live.failures.length) {
     // Cost is printed at 4 decimals, in the panel and in the chip. This window has no
     // subagents, so the panel's cost is the session row's own 1.3718 (window L covers the
     // combined figure below).
-    if (!panel.includes('$1.3718')) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
+    // The recorded value or the live estimate of it (`~$1.37xx` while a call is in flight).
+    if (!/Cost~?\$1\.37\d\d/.test(panel)) throw new Error(`panel cost missing — got: ${panel.slice(0, 200)}`)
 
     if (panel.includes('(estimated') || panel.includes('provider_models_api')) {
       throw new Error('the cost parenthetical is back — it was removed on purpose')
@@ -981,6 +982,13 @@ edgeAssert('a refresh does not move the total', chipH() === beforeRefreshH, `was
 tickH(12000)
 await wait(250)
 
+// LIVE COST: while a call is in flight the estimate must move with the tokens and be marked; the
+// recorded value lands only when the row is re-read.
+const costText = () => ((winH.container?.textContent ?? '').match(/~?\$[\d.]+/) ?? [''])[0]
+
+edgeAssert('the live cost is marked as an estimate', costText().startsWith('~$'), `expected a "~$" figure, got "${costText()}"`)
+edgeAssert('the live cost moves with the tokens', Number(costText().replace(/[~$]/g, '')) > 1.3718, `still flat at ${costText()}`)
+
 edgeAssert(
   'counting continues after a refresh',
   chipH() === rowH + 7000,
@@ -997,6 +1005,14 @@ edgeAssert(
   'a row advance neither double-counts nor drops',
   chipH() === rowH + 7000,
   `expected ${(rowH + 7000).toLocaleString('en-US')}, got ${chipH().toLocaleString('en-US')}`
+)
+
+// With nothing in flight the figure is the recorded value, unmarked: that is the confirmation the
+// estimate is only ever a bridge to it.
+edgeAssert(
+  'the recorded value replaces the estimate when idle',
+  !costText().startsWith('~$'),
+  `expected the recorded figure while idle, got "${costText()}"`
 )
 
 tickH(15000)

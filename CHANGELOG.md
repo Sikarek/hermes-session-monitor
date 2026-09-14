@@ -140,6 +140,18 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **A live cost estimate** — the recorded cost only moves when the session row is written (turn end)
+  or re-read (the 15 s poll), so a turn in progress showed a flat figure while the tokens climbed.
+  While a call is in flight the in-flight tokens are priced at the row's own blended rate
+  (its cost over its tokens) and the figure is marked `~`; the marker disappears the moment the
+  recorded value accounts for them. The blended rate understates an output-heavy call — cache-read
+  tokens cost a fraction of generated ones and the row carries no per-bucket cost — so the estimate
+  lags rather than overshoots, and every read corrects it.
+
 ## [1.1.0] — 2026-09-14
 
 The monitor becomes a two-surface, session-accurate readout, and every figure gains a provenance
