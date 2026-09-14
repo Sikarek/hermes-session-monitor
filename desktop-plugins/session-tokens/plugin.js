@@ -402,7 +402,7 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, {
-          stats: { base, grown, source, streamed, total }
+          stats: { base, grown, rowState, streamed, total }
         })
       })
     ]
@@ -415,7 +415,7 @@ function Chip() {
  * tabular-nums on the right.
  */
 function TokenPanel({ stats }) {
-  const { base, grown, source, streamed, total } = stats
+  const { base, grown, rowState, streamed, total } = stats
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   const share = value => (total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '—')
@@ -460,10 +460,15 @@ function TokenPanel({ stats }) {
           children: `${estimating ? '~' : ''}${fmt(total)}`
         })
       ]}),
-      jsx('p', {
-        className: 'text-[0.6875rem] text-muted-foreground',
-        children: base?.messages > 0 ? `${fmt(base.messages)} messages · this session's record` : source
-      }),
+      // Provenance appears ONLY in the degraded case. The ordinary
+      // "N messages · this session's record" line was removed on request, but a
+      // figure computed from live counters alone must still say so.
+      rowState === 'unavailable'
+        ? jsx('p', {
+            className: 'text-[0.6875rem] text-muted-foreground',
+            children: 'live only — no stored row for this session'
+          })
+        : null,
       // Two groups: the prompt side (input + both cache buckets) and the output
       // side, each with its subtotal. The bar that used to sit here was one solid
       // segment at these proportions (cache read is ~99.6% of everything), so the

@@ -23,7 +23,7 @@ rm -rf ~/.hermes/desktop-plugins/session-tokens                     # uninstall
 
 ```
 Chip    Σ <total> tok · $<cost> · <hit%>
-Click   Session tokens / messages · this session's record
+Click   Session tokens
         Cache hit  (cache read + write)      share of session
         Cache miss (uncached input)          share of session
         Output     (everything generated, reasoning included)
