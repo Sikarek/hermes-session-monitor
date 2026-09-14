@@ -226,8 +226,14 @@ function useMonitor() {
   // drafts and older desktops that do not expose it.
   const focusedStoredId = useValue(host.state.focusedStoredSessionId)
   const focusedRuntimeId = useValue(host.state.focusedSessionId)
+  // Precedence restored to the version that worked: the FOCUSED session leads, exactly as it did
+  // before I inverted this. `activeSessionId` was my inference about which atom tracks the chat on
+  // screen; in the app it evidently does not move with a session switch, so keying on it pinned the
+  // identity to a stale session — the context row kept the previous session's figure (and every
+  // pull was addressed to the wrong runtime id). The active id remains only a fallback for when the
+  // focused ids are absent.
   const activeRuntimeId = typeof host.state.activeSessionId !== 'undefined' ? useValue(host.state.activeSessionId) : null
-  const runtimeId = activeRuntimeId ?? focusedRuntimeId
+  const runtimeId = focusedRuntimeId ?? activeRuntimeId
   const storedId = focusedStoredId
   // The identity every term is attributed to, and the key the per-session reset is tied to: if
   // EITHER half changes, the figures on screen belong to the previous session. Keying on one half

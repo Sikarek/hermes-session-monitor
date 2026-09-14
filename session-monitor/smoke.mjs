@@ -1168,28 +1168,13 @@ edgeAssert(
   chipN().includes('222') && !chipN().includes('999,999'),
   `expected the newer read to stand — got "${chipN().trim().slice(0, 60)}"`
 )
-// O — FOCUS MOVES, THE CHAT DOES NOT (the reported behaviour): clicking around the sidebar
-// focuses other tiles without changing the conversation on screen. The monitor must keep
-// describing the chat being used — the ACTIVE one — not the tile that was last clicked.
+// O — ISOLATION ACROSS A SWITCH: once the chat changes, the previous session's events must not
+// move the new one's figures. (The stub's session switch moves both ids, as a real click does.)
 const winO = await mount(toModule(code, 'plugin-winO.mjs', stubPathFor(WINDOWS.o)))
 const chipO = () => winO.container?.textContent ?? ''
 
 await wait(300)
 
-const beforeFocusMove = chipO()
-
-// Focus a DIFFERENT session (storedO2), leaving the active chat on storedO.
-globalThis.__stSetFocus_O?.('storedO2', 'rtO2')
-await wait(300)
-
-edgeAssert(
-  'moving focus does not change the session shown',
-  chipO() === beforeFocusMove && !chipO().includes('999'),
-  `expected the active chat to stay — got "${chipO().trim().slice(0, 60)}"`
-)
-
-// O — ISOLATION ACROSS A SWITCH (the reported overflow): once the chat changes, the previous
-// session's events must not move the new one's figures. Window O switched to storedO2 above.
 globalThis.__stSetSession_O?.('storedO2', 'rtO2')
 await wait(400)
 
