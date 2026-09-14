@@ -26,6 +26,11 @@ Cost                                              $2.1600   this session + its s
 
 ## What it shows
 
+Two tabs in the sidebar — **Overview** and **Session monitor** — plus the status-bar figure.
+
+The **Overview** totals every session in the profile (subagents included): total tokens, total cost, how many sessions were counted, and how much is in flight right now. It climbs while any session runs: every running session''s usage ticks are counted, and each session''s live portion is dropped as its row is written, so nothing is counted twice. The focused **Session monitor** tab is unaffected by other sessions'' activity.
+
+
 | Row                      | Meaning                                                                                                                                            |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Context**        | Tokens currently in the window / the model's window, and the share in use, above a fill bar. Read from the same live usage payloads as the totals. |

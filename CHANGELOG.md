@@ -152,6 +152,7 @@ Built and iterated on 2026-09-14. Never tagged, never published.
 
 ### Added
 
+- **An `Overview` tab** in the sidebar: the total tokens and cost of every session in the profile — subagents included — climbing while any of them runs. Its base is the same page of session rows the focused view reads; what makes it live is a per-session delta recorded for every running session''s ticks, priced at the aggregate''s blended rate while in flight (marked `~`) and dropped as each row is written, so nothing counts twice. The focused view''s ownership filter is untouched: another session''s tick moves the Overview and never the chip.
 - **A live cost estimate** — the recorded cost only moves when the session row is written (turn end)
   or re-read (the 15 s poll), so a turn in progress showed a flat figure while the tokens climbed.
   While a call is in flight the in-flight tokens are priced at the row's own blended rate

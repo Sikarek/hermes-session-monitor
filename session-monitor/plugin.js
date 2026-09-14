@@ -195,7 +195,44 @@ const SHARED = {
  * the other moved on — the two views disagreeing, which is what "clicking the sidebar area
  * changes the values" looked like from the outside. One set of values, every view mirrors it.
  */
-const UI = { base: null, ctx: null, refreshing: false, rowState: 'pending', subagents: null, version: 0 }
+/**
+ * The estate, for the Overview pane: every session row the last read returned, plus the live
+ * growth of any session currently running. Ticks arrive for every running session (the gateway
+ * emits them per turn), so a delta is recorded per session id BEFORE the ownership filter the
+ * single-session view needs — that view keeps refusing anything that is not its own.
+ *
+ * Deltas, not counters: a `session.usage` total is that process's cumulative for the session, so
+ * absolute values are not comparable between sessions.
+ */
+const AGG = {
+  cost: 0,
+  live: new Map(), // session id -> { last: counter, tokens: counted live since the row read }
+  rowTotals: new Map(), // session id -> row total last seen (a written row absorbs its delta)
+  sessions: 0,
+  tokens: 0
+}
+
+/** What the Overview renders: the rows, plus every running session's live deltas. */
+function overviewSnapshot() {
+  let liveTokens = 0
+
+  AGG.live.forEach(entry => {
+    liveTokens += entry.tokens
+  })
+
+  // In-flight growth priced at the aggregate's own blended rate, marked as the estimate it is.
+  const rate = AGG.tokens > 0 && AGG.cost > 0 ? AGG.cost / AGG.tokens : 0
+
+  return {
+    cost: AGG.cost + liveTokens * rate,
+    costLive: liveTokens > 0 && rate > 0,
+    liveTokens,
+    sessions: AGG.sessions,
+    tokens: AGG.tokens + liveTokens
+  }
+}
+
+const UI = { base: null, ctx: null, overview: null, refreshing: false, rowState: 'pending', subagents: null, version: 0 }
 const UI_SUBSCRIBERS = new Set()
 
 function uiSet(patch) {
@@ -258,7 +295,7 @@ function useMonitor() {
   // The model decides the context WINDOW, so a switch has to invalidate it.
   const model = useValue(host.state.model)
 
-  const { base, ctx, rowState, subagents } = useUI()
+  const { base, ctx, overview, rowState, subagents } = useUI()
   const [refreshing, setRefreshing] = useState(false)
   // Writes go through the shared store, so every view of this window shows the same values.
   // ('pending' until the row read settles: without that gate the chip painted base(null→0) +
@@ -417,6 +454,20 @@ function useMonitor() {
       // fused atom above). Strictly attributed, so one window can never count
       // another session's tokens.
       host.onEvent('session.usage', event => {
+        // Recorded for the OVERVIEW first — it counts every running session, while the view below
+        // must keep refusing anything that is not this session's.
+        const anyTotal = event.payload?.usage?.total
+
+        if (typeof anyTotal === 'number' && event.session_id) {
+          const entry = AGG.live.get(event.session_id) ?? { last: anyTotal, tokens: 0 }
+
+          if (anyTotal > entry.last) entry.tokens += anyTotal - entry.last
+
+          entry.last = anyTotal
+          AGG.live.set(event.session_id, entry)
+          uiSet({ overview: overviewSnapshot() })
+        }
+
         if (!forFocused(event.session_id)) return
 
         const usage = event.payload?.usage
@@ -565,6 +616,32 @@ function useMonitor() {
       if (row?.id && row.id !== storedRef.current) storedRef.current = row.id
 
       setSubagents(row ? descendantsOf(page, effectiveStored) : null)
+
+      let aggCost = 0
+      let aggTokens = 0
+
+      for (const candidate of page?.sessions ?? []) {
+        const candidateId = candidate?.id ?? ''
+
+        if (!candidateId) continue
+
+        const candidateTotal = tokenCount(candidate)
+
+        aggCost += n(candidate.actual_cost_usd) > 0 ? n(candidate.actual_cost_usd) : n(candidate.estimated_cost_usd)
+        aggTokens += candidateTotal
+
+        // A row that grew has had its live tokens folded in: drop the delta so they count once.
+        const seenBefore = AGG.rowTotals.get(candidateId)
+
+        if (seenBefore === undefined || candidateTotal > seenBefore) AGG.live.delete(candidateId)
+
+        AGG.rowTotals.set(candidateId, candidateTotal)
+      }
+
+      AGG.cost = aggCost
+      AGG.sessions = (page?.sessions ?? []).length
+      AGG.tokens = aggTokens
+      uiSet({ overview: overviewSnapshot() })
 
       if (row) {
         const rowTotal = tokenCount(row)
@@ -752,6 +829,7 @@ function useMonitor() {
     base,
     chipTotal,
     costLive,
+    overview,
     costShown,
     statsRuntime: runtimeId,
     ctx,
@@ -822,6 +900,50 @@ function Chip() {
         side: 'top',
         sideOffset: 6,
         children: jsx(TokenPanel, { stats: vm })
+      })
+    ]
+  })
+}
+
+/**
+ * The Overview tab: every session in the profile, totalled, climbing while any of them runs. Its
+ * base is the page of session rows (the same read the focused view makes); what makes it live is
+ * the per-session deltas the tick handler records for every running session.
+ */
+function OverviewPane() {
+  const { overview } = useMonitor()
+  const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, sessions: 0, tokens: 0 }
+  const rows = [
+    ['Sessions counted', fmt(o.sessions)],
+    ['Total tokens', fmt(o.tokens)],
+    ['In flight now', o.liveTokens > 0 ? `~${fmt(o.liveTokens)}` : '—'],
+    ['Total cost', o.cost > 0 ? `${o.costLive ? '~' : ''}$${o.cost.toFixed(4)}` : '—']
+  ]
+
+  return jsxs('div', {
+    'data-slot': 'session-monitor-overview',
+    className: 'flex w-64 flex-col gap-3 p-3 text-[0.75rem]',
+    children: [
+      jsx('p', { className: 'font-medium text-foreground', children: 'Overview' }),
+      jsx('ul', {
+        className: 'flex flex-col gap-1.5',
+        children: rows.map(([label, value]) =>
+          jsxs(
+            'li',
+            {
+              key: label,
+              className: 'flex items-baseline justify-between gap-2',
+              children: [
+                jsx('span', { className: 'truncate text-muted-foreground', children: label }),
+                jsx('span', { className: 'tabular-nums text-foreground', children: value })
+              ]
+            }
+          )
+        )
+      }),
+      jsx('p', {
+        className: 'text-[0.6875rem] text-muted-foreground',
+        children: 'Every session in this profile — subagents included — live while they run.'
       })
     ]
   })
@@ -1036,6 +1158,19 @@ export default {
         toggleLabel: 'Session monitor',
         render: () => jsx(ChipGuard, { children: jsx(Chip, {}) })
       }
+    })
+    ctx.register({
+      id: 'overview',
+      area: 'panes',
+      title: 'Overview',
+      // First tab of the same right-hand zone: what every session totals, live.
+      data: {
+        collapsible: true,
+        hideOnly: true,
+        placement: 'right',
+        width: '260px'
+      },
+      render: () => jsx(ChipGuard, { children: jsx(OverviewPane, {}) })
     })
     ctx.register({
       id: 'pane',

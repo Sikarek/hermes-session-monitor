@@ -693,7 +693,7 @@ if (!live.failures.length) {
     // be a click popover on the chip, and moving it into the sessions column is the
     // whole point of the pane contribution. These assertions fail if the pane is
     // dropped or re-docked elsewhere, or if the panel is not where it belongs.
-    const pane = (live.registered ?? []).find(c => c.area === 'panes')
+    const pane = (live.registered ?? []).find(c => c.id === 'pane')
 
     if (!pane) throw new Error('no sidebar pane was contributed — the detail view has nowhere to live')
     if (pane.title !== 'Session monitor') throw new Error(`pane title is "${pane.title}"`)
@@ -706,6 +706,16 @@ if (!live.failures.length) {
     // status-bar figure (the previous release's behaviour, for when the sidebar tab is
     // not open) and the pane beside SESSIONS. Neither replaces the other, and each is an
     // independent instance of the monitor, so one being closed cannot starve the other.
+    const overviewPane = (live.registered ?? []).find(c => c.id === 'overview')
+
+    if (!overviewPane || overviewPane.title !== 'Overview') {
+      throw new Error('the Overview pane is missing from the sidebar')
+    }
+
+    if (!live.container.querySelector('[data-slot="session-monitor-overview"]')) {
+      throw new Error('the Overview pane did not render')
+    }
+
     const panels = [...live.container.querySelectorAll('[data-slot="session-monitor-panel"]')]
 
     if (panels.length !== 2) {
@@ -1114,7 +1124,7 @@ edgeAssert('the re-pull asked for the NEW session id', globalThis.__stBreakdownP
 // subagent that spawned its own is still this session's). The chip reports the combined
 // figure; the panel splits it. An unrelated session must never be counted.
 const winL = await mount(toModule(code, 'plugin-winL.mjs', stubPathFor(WINDOWS.l)))
-const chipL = winL.container?.textContent ?? ''
+const chipL = winL.container?.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? ''
 const panelL = () => [...document.querySelectorAll('[data-slot="session-monitor-panel"]')].at(-1)?.textContent ?? ''
 const rowL = 1000 + 500 + WINDOWS.l.cacheRead // the session's own row: 11,500
 const kidsL = 2000 + 1000 + 500 // two subagents + one grandchild: 3,500
@@ -1123,8 +1133,32 @@ edgeAssert('the chip counts the subagents', chipL.includes((rowL + kidsL).toLoca
 edgeAssert('the panel has a Subagents row', panelL().includes('Subagents3,500'), `got "${panelL().slice(0, 120)}"`)
 edgeAssert('the Subagents row carries their cost', panelL().includes('$0.0700'), `got "${panelL().slice(0, 120)}"`)
 edgeAssert('the chip cost is combined', chipL.includes('$1.4418'), `expected $1.4418 (1.3718 session + 0.07 subagents) in "${chipL.trim().slice(0, 60)}"`)
-edgeAssert('the unrelated session is not counted', !chipL.includes('999,999') && !panelL().includes('999,000') && !chipL.includes('$11.'), 'a session with no parent link leaked in')
+edgeAssert(
+  'an unrelated session is not counted in the session view',
+  !chipL.includes('999,999') && !panelL().includes('999,000') && !chipL.includes('$11.'),
+  'a session with no parent link leaked into the FOCUSED session view (the Overview totals it by design)'
+)
 edgeAssert('the grandchild is counted', panelL().includes('Subagents3,500'), 'only direct children were summed')
+
+// OVERVIEW TOTALS: every row in the page, plus the live deltas of running sessions. Window L's
+// fixture has five rows — this session (11,500), two subagents (2,000 + 1,000), a grandchild (500)
+// and an unrelated session (999,999) = 1,014,999. A tick from ANOTHER session must move the
+// Overview and must NOT move the focused view.
+const overviewL = () => winL.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+edgeAssert('the Overview totals every row', overviewL().includes('1,014,999'), `got "${overviewL().slice(0, 120)}"`)
+
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { total: 5000 } }, session_id: 'rtZ', type: 'session.usage' })
+await wait(150)
+globalThis['__stEvents_L']['session.usage']({ payload: { usage: { total: 9000 } }, session_id: 'rtZ', type: 'session.usage' })
+await wait(250)
+
+edgeAssert('the Overview counts another session running', overviewL().includes('1,018,999'), `got "${overviewL().slice(0, 120)}"`)
+edgeAssert(
+  'the focused view still refuses that session',
+  !(winL.container?.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? '').includes('1,018,999'),
+  'another session moved the focused total'
+)
 
 // M — THE PANE WITHOUT THE CHIP: a status-bar item can be hidden from the bar's menu, so
 // the pane must not depend on the chip's instance for its numbers. Each view runs its own
