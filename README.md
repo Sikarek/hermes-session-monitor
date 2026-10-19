@@ -28,7 +28,39 @@ Cost                                              $2.1600   this session + its s
 
 Two tabs in the sidebar — **Overview** and **Session monitor** — plus the status-bar figure.
 
-The **Overview** totals every session in the profile (subagents included): **Total tokens**, **Total cost**, **Total requests** and how many sessions were counted. (Requests are counted as they are *observed*: the session row carries only tool calls, and the authoritative per-session request total lives in a table the app side cannot read, so this figure counts every request reported since the app started — the Python half would be needed for a historical total.) Both totals climb while any session runs — every running session's completed calls are counted as their ticks land, and the streamed text of the session in front of you is counted word by word — and each session's live portion is dropped as its own row is written, so nothing is counted twice. A `~` marks a figure still carrying an in-flight estimate; it disappears once the rows account for it, which is the confirmation, per row. The focused **Session monitor** tab is unaffected by other sessions' activity.
+The **Overview** totals every session in the profile (subagents included): counters (**Sessions
+counted**, **Total requests**), then a token section (**Daily tokens**, **Monthly tokens**,
+**Total tokens**), then a cost section (**Daily cost**, **Monthly cost**, **Total cost**) — a hairline
+divides the three sections. (Requests are counted as they are *observed*: the session row carries only tool calls, and the authoritative per-session request total lives in a table the app side cannot read, so this figure counts every request reported since the app started — the Python half would be needed for a historical total.) **Daily** and **Monthly** come from the backend half and are period-attributed: a usage bucket
+  whose first call falls inside the period counts in full (it burned entirely inside it), one whose
+  last call predates it counts for nothing, and one that *spans* the boundary is apportioned by the
+  share of its session's transcript that falls inside the period. Live growth observed while you
+  watch is then added on top. Without the backend half both are observed-only from load. **Daily
+  resets at 00:00 UTC, Monthly at 00:00 UTC on the 1st** — the same clock as the chart below.
+
+Below them, a **per-day bar chart** of the last 30 days: each bar is that day's tokens scaled against
+the window's peak, today drawn in full contrast, and a day with no usage left as a faint 2px stub.
+**Pointing anywhere in a day's column reads that day out underneath it** — the date on the left, the
+token count on the right — and lights the bar, so a day whose bar is two pixels tall is as easy to
+read as the peak. The same line states the window's ends ("`Aug 21 UTC` — `Sep 19 UTC`") while the
+pointer is away; no floating tooltip, so nothing covers the pane.
+
+## Which day is "today"
+
+Every period — the **Daily** and **Monthly** resets and the **chart's bars** — is cut at **00:00 in
+your own timezone**, not the server's and not a fixed UTC. The desktop side knows the real zone (it
+runs on your machine) and tells the backend with each read; the backend prefers the named zone so a
+daylight-saving shift is followed, falls back to the current UTC offset if the runtime has no tz
+database, and to its own local clock if it is told nothing at all.
+
+That matters more than it sounds. This is a cumulative-counter database, so a day boundary decides
+which bar — and which "today" — a call lands in, and the size of the effect is large: measured on
+this install the same calendar day holds `1,343,080,482` tokens cut at a Bangkok midnight and
+`1,794,678,555` cut at UTC's, because an evening in one zone is still the previous afternoon in the
+other. The chart's dates therefore carry the zone they were cut in (`Aug 21 GMT+7` … `Sep 19 GMT+7`)
+so two figures can never be compared without knowing which clock produced them.
+
+Both totals climb while any session runs — every running session's completed calls are counted as their ticks land, and the streamed text of the session in front of you is counted word by word — and each session's live portion is dropped as its own row is written, so nothing is counted twice. A `~` marks a figure still carrying an in-flight estimate; it disappears once the rows account for it, which is the confirmation, per row. The focused **Session monitor** tab is unaffected by other sessions' activity.
 
 
 | Row                      | Meaning                                                                                                                                            |
@@ -52,9 +84,102 @@ live in `session_model_usage`, which only the Python side can reach — so the r
 backend plugin that exposes them read-only at `/api/plugins/session-monitor/summary`:
 
 ```
-totals:    24,517 requests · 5,691,612,344 tokens · $73.9135 · 263 sessions
+totals:   26,112 requests · 6,364,280,802 tokens · $96.8663 · 276 sessions
+today:    1,203 requests ·   42,233,892 tokens ·  $0.7096 · 3 sessions   (00:00 your time)
+month:   11,910 requests · 3,241,124,134 tokens · $63.7872 · 139 sessions (from the 1st)
 byProvider / byTask / byModel     (whatever that table holds)
 ```
+
+**Cost in this half is re-priced, not just re-read.** A recorded estimate is computed when the call
+happens and never revised, so it keeps the rates of that moment and drifts below the catalogue once
+a price rises; on this install that alone made the Overview read about 20% under. For OpenRouter
+rows the recorded tokens are therefore valued at OpenRouter's own catalogue price from the local
+cache Hermes already keeps, and a route with no catalogue entry keeps its recorded estimate rather
+than becoming zero.
+
+**Flex-pinned routes are priced as flex.** Pin a model to OpenRouter's `openai/flex` endpoint
+(`provider_routing.models.<id>.only: [openai/flex]`) and the invoice halves — flex is measured at
+exactly 0.5× the standard rates on every token bucket — while Hermes records its estimate at
+standard rates (measured against OpenRouter's own charges: 2.0001× on `openai/gpt-6-luna`, 2.0×
+on `openai/gpt-5.6-sol`). Every cost this plugin derives is therefore scaled by the flex
+multiplier the pin guarantees: the Overview inside the re-price, the panel and the chip from the
+`flex.mults` map `/summary` carries per session (estimated-cost weighted, since one session can
+mix pinned and unpinned models). What it cannot know: WHEN a model was pinned — the config keeps
+no history — so usage from before a pin also reads at flex rates (on this install, $1.62 of
+August `gpt-5.6-luna-pro` usage; only the all-time totals can show it).
+
+The rate used is the one the bucket's **own hours** hit, averaged across the catalogue's price
+windows. OpenRouter prices some models by time of day and day of week and reports whichever window
+is *active* as the base price, so `deepseek/deepseek-v4.1-flash` reads `$0.30/M` at 09:00 UTC and
+`$0.15/M` at 14:00 UTC — weekday 01:00–04:00 and 06:00–10:00 UTC run at twice the price. Reading
+that field directly would make history swing 2× with the clock, so it is not read; but charging
+every hour the **highest** window was wrong in the other direction, since most hours are cheap. A
+bucket's `first_seen`→`last_seen` span is fixed the moment its calls are recorded, so the windows are
+averaged over that span: stable, and no longer biased upward. With no span to go on the highest
+window is kept, as the bound that cannot read below the invoice.
+
+Measured against the same account's OpenRouter figure (`/api/v1/credits`, all-time `$106.91`): the
+profile's OpenRouter rows re-price to `$122.33`, where the peak rule gave `$144.74` — the `$22.38`
+between them is the peak rule alone. The remaining `~$15` is the **token count, not the rate**: even
+at the cheapest rate the catalogue lists, those same rows come to `$115`, so something records more
+tokens than OpenRouter bills for. What that is needs OpenRouter's per-model activity rows, which
+require a management key (`/api/v1/activity` refuses a normal one), so it is stated as an open gap
+rather than explained away. The total shown also *includes* whatever other providers you bill
+directly (DeepSeek, here), which the OpenRouter figure does not.
+
+**DeepSeek is priced from DeepSeek's own table**, not from a recorded estimate: the estimate kept
+the rates of the day the call happened to hit a stale catalogue (verified — `deepseek-v4-flash`'s
+recorded `$9.515` is exactly its tokens at DeepSeek's pre-2026-08-16 prices), and one model had no
+rate at all. The published schedule has an off-peak and a peak rate (twice as much on weekdays
+01:00–04:00 and 06:00–10:00 UTC) and changed on 2026-08-16, so a bucket is split at that date and
+blended across the hours it was alive. The same table prices OpenRouter's `deepseek*` rows: those
+ids are billed at DeepSeek's schedule (OpenRouter's catalogue published exactly these windows until
+its 2026-10-08 refresh dropped them), and the vendor prefix is stripped before matching.
+
+**Claude-plan traffic is excluded from cost, never from tokens.** `anthropic` and
+`claude-subscription-directsdk-experimental` run on a separate subscription, so their cost is
+dropped from every figure and their tokens are kept — the Overview reports `pricedTokens` beside
+`tokens` for exactly this split.
+
+Measured against the providers' own reports, all three cut in UTC (`scripts/reconcile_openrouter.py`
+prints this table on demand):
+
+```code
+same window      OpenRouter says   the monitor   ratio
+today                 $2.58         $2.24       0.87x
+this month            $3.85         $2.96       0.77x
+all-time            $129.90       $119.40       0.92x
+```
+
+**The headline `Total cost` is the providers' own figure once it has been reconciled**, not the
+local estimate. `scripts/reconcile_openrouter.py` writes what OpenRouter *actually reported* (its
+`/api/v1/credits` total) into `~/.hermes/session-monitor-anchors.json`; DeepSeek's half is typed in
+with `--deepseek-amount <USD>` because their API exposes only a balance, never the spend. The row
+then shows that total, dated, with the estimate kept underneath as the part attributed to sessions.
+
+**Nothing is pulled from the providers on restart or update.** Hermes re-reads the anchors file on
+every request, so a restart shows exactly what the last reconciliation recorded — the token and cost
+*estimates* stay live because they come from `state.db`, but the confirmed total is a snapshot until
+the script runs again. A scheduled job (cron `session-monitor cost anchor`, every 6h,
+`~/.hermes/scripts/refresh_cost_anchor.sh`) keeps it moving; it refreshes OpenRouter's half and
+**keeps** a DeepSeek figure typed in earlier, and stays silent unless it fails. Pause or drop it with
+`cronjob_manage` (job `f1ab624e7739`) if you would rather run it by hand. Plugin files under
+`~/.hermes/desktop-plugins/` and `~/.hermes/plugins/` are untouched by `hermes update`, so the
+plugin survives updates.
+
+This matters because the two differ by more than fees: the estimate can only value tokens Hermes
+recorded, so anything billed outside this database is invisible to it. Measured on this install,
+reconciled 2026-10-16: the providers report **$216.01** (OpenRouter $145.83 + DeepSeek $70.18) while
+the recorded tokens account for **$113.02** — the difference is mostly DeepSeek usage from before
+this database tracked it, plus OpenRouter's per-call charges. Nothing is invented: unknown reads as
+blank, and a total that has not been reconciled still shows the estimate.
+
+It still cannot be exact: OpenRouter charges things that are not a token × rate — context tiers above
+a threshold, and per-search fees (`$0.01` a search on some models) — none of which any local table can
+attribute to a cumulative counter. The rows are also blended uniformly across the hours a bucket was
+alive, while real traffic clusters in working hours (which are DeepSeek's *peak* windows), so the
+blend reads slightly low. The one measurement that would close it is OpenRouter's per-model activity
+(``/api/v1/activity``, which needs a management key).
 
 Install it alongside the app half (same id, so the pane's own REST namespace resolves):
 
@@ -69,6 +194,50 @@ then allow its Python to run — user plugins are gated behind `plugins.enabled`
 plugins:
   enabled: [session-monitor]
 ```
+
+**Cost of a read.** The endpoint is polled every 5 seconds while the Overview is open, so it is
+built to be cheap: the message-derived weights it needs (the character timeline a bucket's tokens
+are spread by) are computed in **two passes and cached for 20 seconds**, keyed by the day/month/window
+boundaries. Measured here: **~500 ms cold, ~30 ms warm** — before the cache it was ~850 ms on *every*
+call, because each `length()` over the message table costs ~200 ms and the endpoint needed four
+passes. The live part of the display does not come from that poll at all; it rides the event
+subscriptions, so a slow or failed read costs accuracy, never freshness.
+
+**Why the endpoint is a sync function, not `async def`.** The work is blocking `sqlite3`, and an
+`async def` endpoint runs *on the event loop* — so while it worked, every other request the backend
+was serving queued behind it. Measured: a request scheduled alongside a cold read waited **489.4 ms**
+against the read's own 489.3 ms, and the app's session-list request shares that loop, which is why
+opening a session pane felt slow when this backend half arrived (the version before it made *no*
+REST calls at all, hence the instant load). As a sync endpoint Starlette runs it in a threadpool:
+the same concurrent request now waits **2 ms**. If you ever move this handler back to `async def`,
+move the queries off the loop at the same time — `selftest.py` fails if it goes back.
+
+**A session switch does not touch the backend half.** The summary is profile-wide — it does not
+depend on which session is selected — so it is read **once per view mount** and then kept fresh by
+the Overview's own loop. It used to ride every session change (one read per mounted view: three, in
+a window with the chip, the pane and the Overview open), and each of those is up to ~580 ms of
+backend work, which is what made switching feel slow.
+
+**A switch repaints the context window it already knows.** The Context row is the slowest thing the
+pane asks for — `session.context_breakdown` is estimated by the backend from the live prompt, tools
+and transcript — so it used to blank the row and wait for a fresh estimate on every switch. The last
+figure each session reported is remembered for the life of the app run and painted immediately, with
+the read running behind it; the stamp check still guarantees one session's window never appears under
+another's name.
+
+**A switch repaints the totals row it already knows.** The Cache hit / Cache miss / Output /
+Total / Cost row is remembered per session the same way the Context row is. It used to be cleared
+on every switch while a fresh session-list read ran — and that read can miss for seconds (the
+session is not in the loaded page of the paginated list) or fail, so the panel showed **zeros**
+for a session whose figures it had already displayed, until the read landed or the next poll
+found the row ("it resets everything to zero... it happens every time I switch the session
+window"). A switch now paints the remembered row immediately and the read refreshes it behind;
+a session never seen before in this app run still starts empty.
+
+**When a read fails**, the last good totals stay on screen — the Overview switches to its
+page-of-rows fallback only after three consecutive failures, and a later success lands back on the
+same figures. Clearing them on the first hiccup made the totals visibly jump between two bases
+(recorded estimates vs re-priced), which read as the pane being buggy.
 
 Restart the backend (or the app) once. Without this half the Overview falls back to the page of
 rows it can read itself — same tabs, fewer sources. With it, the Overview's totals are Hermes' own
@@ -113,6 +282,20 @@ The total is assembled from three sources, in this order:
 - **The base uses Hermes' own definition** — `input + output + cache_read + cache_write`, the same "Total tokens" as `agent/insights.py`. Reasoning is a detail *inside* `output` and is never added separately.
 - **Which session it describes** — the **focused session**: the one the desktop reports as current, which is what the figures actually follow (keying on `activeSessionId` instead pins the context figure to one session for every session, reproducibly — `PREFER_ACTIVE_CHAT` at the top of the plugin switches it in one line). If a build moves focus when you interact with something in the sessions strip, the readout follows that focus; the pane therefore lives in its own zone rather than as a tab in that strip.
 - **Per-session isolation** — every term is attributed by session id (the focused session's runtime id or its stored id). There is no fallback that accepts unknown ids, so another session's events can never enter this chip.
+- **The stamp and the test that reads it must consult the same ids.** The stamp is written from the
+  id a row read *adopts* (the read rewrites it when it resolves the session on screen); the test used
+  to compare against the app's stored-id *atom* instead. Wherever those disagree — the usual state for
+  a second or two after a restart, while the atoms settle — a window measured for the session was
+  stamped with one id and checked against another, which shows as an empty Context row.
+- **The context window is stamped with both identities, and either one matching is enough.** The
+  window is the one figure with no identity of its own — it is read from a payload that could have
+  been measured for anything — so it is stored with the session it was measured for. That stamp used
+  to be the runtime id alone, which is the wrong half to rely on: a resumed session runs under a
+  **new** runtime id while its stored id stays, so a figure measured for it (pushed before the
+  window's own atoms caught up, or relayed) carried a stamp that no longer matched and the row
+  stayed blank — the "context window is glitchy and doesn't show up for some session" report. The
+  stored id is per-session and stable, so it carries the guarantee the strict check was after: a
+  payload for a *different* session is still dropped on its stored id before it can paint.
 - **Restart-safe** — the agent's live counters are process-local and restart at zero, which is why a live-only counter appears to reset; the stored row does not.
 - **Subagents are counted, on their own line** — their tokens live in their own session rows, which is why the partition above is this session's own. The panel adds a `Subagents` line (tokens · cost) and the chip's total and cost include them, summed transitively from the same page (a subagent that spawned its own is still this session's). Their *live* ticks are still refused — they carry the child's session id, and accepting unknown ids is what once let another session's work inflate this chip — so the figure updates when a child writes its row, i.e. at the end of its own turn.
 - **The Context row is live, not stored** — it comes from `context_used` / `context_max` / `context_percent` on those two event payloads, and — when nothing has been pushed yet — from an on-demand `session.context_breakdown` read addressed to this window's session id, so a panel opened on an idle session is never blank. The backend rejects the read for a runtime id it no longer holds (a detached or reaped session), so it is retried briefly and then re-asked by the poll and on every session change, instead of being fired once and forgotten. A `~` marks the figure the backend calls estimated. The window follows the model: switching models clears it (the row reads `—` rather than the previous model's limit) and triggers a fresh read.
@@ -134,9 +317,25 @@ and the result is stored per session. Rates come from Hermes' price map — `off
 
 **Live estimate.** The recorded figure only changes when the row is written (turn end) or re-read (the 15-second poll), so a turn in progress used to show a flat cost while the tokens climbed. While a call is in flight the in-flight tokens are now priced at the row's own blended rate — its cost over its tokens — and the figure carries a `~`; the marker goes as soon as the recorded value accounts for them. That rate **understates** two cases, so it lags rather than overshoots and every read corrects it: an **output-heavy call** (cache-read tokens cost a fraction of generated ones, and the row carries no per-bucket cost), and a session that has **used models at different rates** — the blended rate is the row cost over the row tokens, so free-tier tokens in the history dilute it. A session spanning eleven models (several free) has a rate far below its current model's and the live figure trails until the recorded value lands.
 
+**In the Overview, cost is re-priced rather than re-read.** The session panel and the chip show
+`estimated_cost_usd` exactly as Hermes stored it, scaled only by the session's flex multiplier
+(see below). The Overview's three cost rows come
+from the backend half, which values each recorded bucket's tokens at the rates the bucket's own
+calls were subject to: the catalogue's price windows averaged over its `first_seen`→`last_seen`
+span, and the long-context tier its own call sizes select (a `min_prompt_tokens` premium is NOT
+a time window — reading it as one doubled every long-context model's cost) — because a stored
+estimate is fixed at the moment of the call and drifts below a price that later rises, while the
+catalogue's base field is itself whichever window is active. For OpenRouter routes that price comes
+from OpenRouter's own catalogue entry in the local cache; a route with no entry keeps its recorded
+figure. Per-search fees stay out of both figures.
+
 **Accuracy.** Three consequences follow from that design:
 
 - The value is an **estimate from published rates**, not the provider's invoice — they can differ.
+- `estimated_cost_usd` is a **standard-rate** figure even for flex-pinned routes (measured: 2.0×
+  against OpenRouter's own charge), so the panel scales it by the flex multiplier the backend half
+  computes — the panel shows the flex price wherever the pin guarantees one. A recorded
+  `actual_cost_usd`, when it exists, is never rescaled.
 - Reasoning tokens are priced at the model's **output rate**. On the few models that publish a different reasoning rate, the estimate is off by the difference.
 - OpenRouter reports a real per-generation charge, but not through any data a plugin can read, so it is not used.
 
@@ -217,6 +416,19 @@ grep -n "text.length" plugin.js
 - **Cache hit includes cache writes.** A write is a miss being cached — priced above plain input, counted as a hit on the next call. It is 0 on routes without explicit caching (DeepSeek, OpenRouter), so on Anthropic this row includes a portion that was not strictly a hit.
 - **Live text is an estimate.** Streamed text is counted at ≈4 characters per token until the call's real total arrives, after which the estimate is replaced.
 - **Subagent figures arrive at their turn ends.** A child writes its row when its own turn finishes, and the pick-up is the same 15-second poll; a subagent still running is not counted yet. Sessions beyond the fetched page (500 rows) are not seen.
+- **The chart is an estimate per bar, weighted by transcript volume.** A usage bucket records only
+  when it was first and last written, so a day's figure is apportioned by how much *text* that
+  session moved that day (content + reasoning characters, ÷4 ≈ tokens). Characters, not message
+  counts: three terse turns and one 12,000-character tool result are one message each, while the
+  second costs orders of magnitude more, and a count-based split put a bucket's tokens on the chatty
+  day instead of the expensive one. It is still an estimate — a day whose cost came from one huge
+  cached call among many small ones is smoothed toward its neighbours. Days before the 30-day window
+  are not drawn, and a bucket older than the window contributes only its in-window share.
+- **Daily and Monthly are period-attributed estimates.** A bucket born inside the period counts in
+  full; one that ended before it counts not at all; one that spans the boundary is apportioned by
+  how many of its session's messages fall inside the period — a proxy, since message counts are not
+  token counts. Without the backend half (or before it answers) they count only activity observed
+  since load. Both reset on the next midnight in your timezone that the monitor sees.
 - **The context window is the provider's figure.** It is the size of the prompt for the last call (plus what the backend adds), so it can read lower than the session total — the session total counts every call, the window counts what is in context right now.
 
 ## Development
@@ -238,8 +450,11 @@ The plugin is one plain-ESM file: no build step, hot-reloaded on save.
   --target esnext --moduleResolution bundler --skipLibCheck --noImplicitAny false \
   --strictNullChecks false session-monitor/plugin.js
 
-# 2. behavioural
+# 2. behavioural (renderer half)
 node session-monitor/smoke.mjs
+
+# 3. backend half — re-pricing, period apportionment, the today ≤ month ≤ total ladder
+~/.hermes/hermes-agent/venv/bin/python plugins/session-monitor/dashboard/selftest.py
 ```
 
 ### What the mount test covers
@@ -273,6 +488,7 @@ Edge cases — each is a situation the chip meets in the field:
 | A provider that bills cache writes                                         | `Cache hit` = read + write, and the total includes both                                                                                             |
 | A garbage payload (`null`, missing fields, non-numeric, negative, 10^15) | Nothing invalid is painted — no`NaN`, no `undefined`                                                                                             |
 | A session switch inside one window                                         | The new session takes over; the abandoned one stops counting                                                                                          |
+| A switch back to a session already shown, with the row read slow or missing | The remembered totals row paints immediately — never zeros while the read is pending or failing                                                      |
 | A model switch                                                             | The context window clears and a fresh read is triggered                                                                                               |
 | A panel opened on an idle session, nothing pushed yet                      | The window is fetched on demand instead of staying blank                                                                                              |
 | A session the gateway no longer holds in memory (detached / reaped)        | The pull is rejected, one retry + the poll keep asking, and the row says`—` rather than a stale number; it fills in when the session is live again |

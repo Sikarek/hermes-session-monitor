@@ -8,6 +8,101 @@ format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## Unreleased
+
+- **The cost anchor refreshes itself.** A scheduled job (`session-monitor cost anchor`, every 6h)
+  re-runs `scripts/reconcile_openrouter.py`, so the confirmed total tracks OpenRouter's invoice
+  instead of freezing at whatever it said when last run by hand. The script now merges rather than
+  overwrites: a DeepSeek figure typed in earlier survives a refresh (their API can never supply it).
+  Restarting Hermes re-reads the anchors file on every request but never fetches — nothing pulls from
+  the providers on its own.
+
+---
+
+## Unreleased
+
+- **`Total cost` now shows the providers' own reported spend once reconciled.** The estimate cannot
+  reach it: it only values tokens Hermes recorded, and misses usage billed outside this database.
+  Measured 2026-10-16 — OpenRouter $145.83 + DeepSeek $70.18 = **$216.01** against $113.02 of
+  recorded tokens, the difference being mostly DeepSeek platform usage from before this database
+  tracked it. `scripts/reconcile_openrouter.py --deepseek-amount <USD>` writes both figures into
+  `~/.hermes/session-monitor-anchors.json`; the Overview then shows that total, dated, with the
+  estimate underneath as the part attributed to sessions.
+
+---
+
+## Unreleased
+
+- **A `Confirmed (providers)` row in the Overview.** The cost figures are estimates (recorded
+  tokens × price tables) and were measured at 0.94× OpenRouter's own report — and at 0.77–0.87× on
+  the day and month windows — because OpenRouter bills context tiers, per-search fees and vision
+  premiums that no token × rate reproduces. Every local cause was ruled out by measurement (stale
+  prices +$0.22, reasoning tokens already inside output, no usage missing from the rows, the flex
+  discount removing $0, unlisted models unbilled). `scripts/reconcile_openrouter.py` now writes the
+  providers' OWN totals to `~/.hermes/session-monitor-anchors.json` and the Overview shows that as
+  the one non-estimate figure, dated, with its gap against the estimate. DeepSeek's half stays null
+  until typed in (`--deepseek-amount`): their API exposes only a balance, never the spend.
+
+---
+
+## Unreleased
+
+- **Claude-plan cost stays out of every figure, its tokens stay in.** `anthropic` and
+  `claude-subscription-directsdk-experimental` are billed to a separate subscription, not this
+  ledger, so their cost is dropped from the chip, the session pane and every Overview figure while
+  their tokens still count. (Live since the previous round; confirmed working on the served
+  endpoint: those two providers read `$0.00`.)
+- **DeepSeek rows are priced at DeepSeek's own published schedule.** The recorded estimate used
+  DeepSeek's **pre-2026-08-16** rates (verified: `deepseek-v4-flash`'s $9.515 is exactly its tokens
+  at the old $0.14/$0.28/$0.0028 table), one model had no rate at all ($0.00 for 24.5M cached
+  tokens), and OpenRouter's catalogue no longer publishes the peak windows. Now both providers'
+  `deepseek*` rows — including the prefixed `deepseek/deepseek-v4.1-flash`, 2.9B tokens — are priced
+  at the published table: the 2026-08-16 change splits a straddling bucket, and the weekday peak
+  windows (01:00–04:00 and 06:00–10:00 UTC) at twice the off-peak rate. Measured effect: the
+  all-time figure moves from 1.09× OpenRouter's own report to **0.92×** ($119.40 vs $129.90).
+
+---
+
+## Unreleased
+
+- **A session switch no longer zeroes the totals row.** Switching sessions cleared Cache hit /
+  Cache miss / Output / Total / Cost and waited for the session-list read — which can miss for
+  seconds (the session is not in the loaded page of the paginated list) or fail, so the panel
+  showed zeros for a session whose figures it had already displayed until the read landed ("it
+  resets everything to zero... it happens every time I switch the session window"). The row is
+  now memoized per session, exactly like the Context row: a switch paints the figures the session
+  reported earlier in this app run and the read refreshes them behind. A session never seen
+  before in this app run still starts empty.
+
+- **Cost is now charged at the rate each bucket's own hours hit.** OpenRouter prices some models by
+  time of day and day of week (`deepseek-v4.1-flash` runs at 2× on weekday 01:00–04:00 and
+  06:00–10:00 UTC) and reports whichever window is active *now* in its `prompt`/`completion` fields.
+  The Overview used to value history at the **highest** window, which is stable but charged every
+  cheap hour the peak price: measured at **$22.63 of pure overestimate** across the real rows behind
+  one Overview (a 36% overshoot against OpenRouter's own invoice). Each bucket's `first_seen`→
+  `last_seen` span is fixed once its calls are recorded, so the windows are now averaged across it —
+  stable *and* unbiased. With no span to go on, the peak is kept as the conservative bound. On the
+  real rows this moves the all-time cost from $144.74 to $122.33 against OpenRouter's $106.91.
+
+- **The flex tier is now priced as the flex tier.** Pinning models to OpenRouter's `openai/flex`
+  endpoint (billed at exactly half the standard rates) halved the invoice but not the monitor:
+  `estimated_cost_usd` is recorded at standard rates (measured: 2.0001x and 2.0x against
+  OpenRouter's own charges) and the Overview re-priced at standard catalogue rates on top — the
+  two together read **4x the bill**. Every cost is now scaled by the flex multiplier the routing
+  config guarantees (the panel and chip via `summary.flex.mults`, the Overview inside the
+  re-price), so the `openai/gpt-6-luna` acceptance row shows $0.0009175875 where it showed 4x
+  that. The discount follows the current pin — the config keeps no pin history — so pre-pin usage
+  of a pinned model also reads at flex rates ($1.62 of August `gpt-5.6-luna-pro` here).
+
+- **Long-context `overrides` are no longer read as price windows.** A `min_prompt_tokens` tier was
+  painted over all 168 hours of the week at its premium rate — a second doubling on the 16 of the
+  22 flex models that carry a tier. The bucket's own call sizes pick the tier now (prompt-side
+  tokens per call for `min_prompt_tokens`, generated tokens for a completion band), and only
+  `utc_*` windows reach the weekly schedule; with no call count to size by, the premium is kept
+  as the conservative bound.
+
+---
+
 ## Pre-1.0.0 — development
 
 Built and iterated on 2026-09-14. Never tagged, never published.
@@ -165,6 +260,144 @@ Built and iterated on 2026-09-14. Never tagged, never published.
   The session row carries only tool calls and the authoritative per-session count lives in
   `session_model_usage`, which the renderer cannot read, so this is every request reported while the
   app has been running — a historical total needs the Python half.
+- **A `Daily tokens` / `Daily cost` pair** in the Overview: `Daily tokens` sits above the all-time
+  totals and `Daily cost` sits below `Total tokens`, resetting at 00:00 UTC.
+- **A `Monthly tokens` / `Monthly cost` pair** working exactly like Daily from the first of the month.
+  Both share one period implementation — one shape, two boundaries — rather than two.
+- **Period attribution that cannot read zero while you work.** The first cut seeded a period from
+  the usage buckets *created* inside it, which is exact for a bucket born in the period but reports
+  nothing for a long-running session: buckets are per (session, model, provider, task) and are born
+  once, so a session running for days contributes to the day it started and then to nothing. The
+  live check made it obvious — Daily read `0` and `$0.0000` mid-conversation. A bucket that spans a
+  boundary is now apportioned by the share of its session's messages inside the period (`messages`
+  is the only per-session timeline; its token column is unpopulated, so the split is by message
+  count, a proxy), a bucket that ended before the period still counts zero, and a bucket born inside
+  it still counts in full.
+- **Cost re-pricing in the backend half.** Reported as "the monthly and total cost look lower than
+  OpenRouter". They were, by about 20%: `estimated_cost_usd` is written when the call happens and
+  never revised, so it keeps the rates of that moment — for this install's two biggest models the
+  recorded figure was well below what the same tokens cost at the catalogue price Hermes now holds
+  (`deepseek/deepseek-v4.1-flash` $22.76 recorded vs $34.81 at today's rate; `z-ai/glm-5.3-flash`
+  $24.11 vs $31.20; `deepseek/deepseek-v4-flash-0731` $15.77 vs $6.90, the other way). The backend
+  now values each OpenRouter bucket's tokens at OpenRouter's own catalogue entry from the local
+  cache, falling back to the recorded estimate when a route is unlisted.
+- **The peak rate, not the active window.** The first cut of that re-pricing read the catalogue's
+  `prompt`/`completion` fields, and OpenRouter reports whichever **time-of-day window is active** as
+  the base price — `deepseek/deepseek-v4.1-flash` reads `$0.30/M` at 09:00 UTC and `$0.15/M` at
+  14:00 UTC, with the full schedule under `overrides`. So the figure swung 2× with the clock, and
+  off-peak it landed *below* even the recorded estimate ($96.87 → $72.94 between two calls an hour
+  apart), which is the "still not showing the correct amount" report. The highest rate across the
+  entry (base plus every override) is used instead: stable, and an upper bound on token charges
+  rather than a lower one. Measured against the same account's invoice: all-time $95.44 for the
+  profile ($84.71 OpenRouter) against $91.14, month $62.43 against $63.49.
+- Residual error is what a token × rate cannot express — per-search fees (`$0.01` on some models)
+  and whatever share of a model's calls fell in a cheaper window than the peak used. Verified with
+  `dashboard/selftest.py`: three mutations (repricing removed, apportionment removed, overrides
+  ignored) each fail the suite.
+- **A per-day bar chart in the Overview** (last 30 UTC days): one bar per day, scaled to the
+  window's peak, today in full contrast, days with no usage kept as a 2px stub so "nothing that day"
+  is visible rather than absent. Pointing anywhere in a day's column reads that day out below the graph
+  (date left, tokens right — the same label/figure arrangement as the rows above) and lights the
+  bar; the line shows the window's ends when idle. The hover target is the full-height column, not
+  the painted bar: a quiet day is a 2px stub, and asking the pointer to land on that is asking it to
+  miss (reported immediately after the first cut, which hung the handler on the bar). The pointed
+  column also tints, so a stub still gives feedback. No header label and no floating tooltip: the
+  first cut carried a static "Tokens per day" caption that stated the peak rather than answering
+  about a bar. Day attribution reuses the Daily row's rule — a bucket spread over
+  the days it was alive, weighted by its session's messages on each day — and the newest bar matches
+  the Daily figure exactly (asserted in both suites).
+- **The chart's days are UTC, its weights are characters.** Two corrections after the first cut read
+  low against OpenRouter's activity page. (1) The split was weighted by message *counts*; it now
+  weights by transcript volume — content + reasoning characters, ÷4 ≈ tokens — because one
+  12,000-character tool result and three terse turns are one message each while the second costs
+  orders of magnitude more. A bucket spanning two days is a fixture in `selftest.py`: volume puts
+  900,000 of its 1,000,000 tokens on the expensive day, a count weighting puts 800,000 on the chatty
+  one. (2) The bars were cut on Bangkok days while every provider dashboard, OpenRouter's included,
+  cuts on UTC — measured on this install the same day holds `1,343,080,482` tokens on one boundary
+  and `1,794,678,555` on the other, a 450-million-token swing that no amount of attribution accuracy
+  could reconcile. The chart is UTC-keyed and labels its dates `UTC`, and the Daily and Monthly rows
+  followed it (see "One clock" below).
+- **One clock, and it is the user's.** The Daily and Monthly resets started as 00:00 Asia/Bangkok,
+  were moved to 00:00 UTC while reconciling against OpenRouter, and now follow **whatever zone the
+  person reading them is in** — the choice that makes "today" mean today. The desktop side detects
+  the zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) and sends it as `?tz=<name>&offset=<minutes>`
+  on the summary request; the backend prefers `ZoneInfo(name)` so a daylight-saving change is
+  followed, falls back to the offset when the runtime has no tz database, and to its own local clock
+  when told nothing. The chart's dates carry the zone (`Sep 14 GMT+7`).
+- The size of the boundary choice, measured on this install: 2026-09-14 holds `1,343,080,482` tokens
+  cut at a Bangkok midnight, `1,794,678,555` at UTC's, and `1,803,000,000`-odd at neither once the
+  buckets that span the edge are apportioned. A bucket placed between the two midnights (20:00 UTC,
+  03:00 next-day Bangkok) is asserted in BOTH directions in `selftest.py` — present in the user's
+  day and absent from UTC's — so a plugin hardcoded to either clock fails, and a second contract
+  asserts the request actually carries the zone (mutating either one out fails the suite).
+- **The Overview pane's read got 16× cheaper.** Measured on this install, the summary endpoint cost
+  **~850 ms on every call** while the pane polls it every 5 seconds: each `length()` pass over the
+  message table is ~200 ms and the endpoint needed four of them (lifetime totals, window days, and
+  the day and month shares). The shares now come from **one** aggregate pass with `chars` computed
+  once in a subquery (repeating the expression in three aggregates made SQLite evaluate it three
+  times per row), the weights are cached for 20 seconds behind a two-key map, and the two helpers
+  that became unused were deleted rather than left behind. Same figures, **~500 ms cold / ~30 ms
+  warm**.
+- **The context stamp and its display test read the same source now** (verified inconsistency): the
+  stamp was written from the *adopted* stored id — the one a row read resolves and rewrites — while
+  the test compared it against the app's stored-id *atom*. Any session where those two disagree, which
+  is the state while the app's atoms settle after a restart, had its own window stamped with one id
+  and checked against another, so the row showed nothing.
+- **A pushed window is accepted when it names EITHER of the window's two ids** (the adopted id or the
+  app's stored id), and the stamp records both. This is a widening for robustness, **not a verified
+  fix**: the premise — that the adopted ref actually diverges from the atom in the field — could not
+  be reproduced in the harness, where the adoption does not trigger, so the assertion that covers it
+  passes under the old rule too. Stated plainly rather than dressed as proven: it cannot reject
+  anything that was accepted before, and it accepts a case that would otherwise blank the row.
+- **The context row stopped blanking for resumed sessions.** The window was stamped with the runtime
+  id alone and shown only while that stamp matched the chat on screen. A resumed session runs under a
+  new runtime id while its stored id stays, so a figure measured for it — pushed before the window's
+  own atoms caught up, or relayed — matched nothing and the row read `—` for that session. The stamp
+  now carries **both** identities and either one matching is enough; the stored id is per-session and
+  stable, which is the guarantee the strict check existed for, and a payload for another session is
+  still dropped on its stored id before it can paint. Both directions are asserted: the old
+  runtime-only rule fails the suite with the blank row reproduced (`Context—`), and removing the
+  stored-id check fails it with `a foreign session.info painted its context window`.
+- **A session switch stopped doing work it never needed.** Two costs rode every switch. (1) The
+  profile-wide summary was re-read on each session change — the effect that re-ran per session also
+  carried the backend read — so a window with the chip, the pane and the Overview open fired **three
+  summary requests per switch** (asserted: a mutant that restores it reports `3 summary read(s) rode
+  the switch`), each up to ~580 ms of backend work. The read now happens **once per view mount**, and
+  the Overview's own loop keeps it fresh. The first attempt removed it from the switch path *and* the
+  mount path, which the harness caught: a freshly opened pane lost its totals for up to 5 s, so the
+  mount read is its own effect.
+- **The context window is remembered per session.** `session.context_breakdown` is the slowest request
+  the pane makes — the backend estimates it from the live prompt, tools and transcript — and a switch
+  blanked the Context row to wait for a fresh one. The last figure each session reported is now kept
+  for the life of the app run and painted immediately on return, with the read still running behind
+  it. Writing it exposed a real bug: the memo key came from a render-scoped closure, so it went stale
+  and filed one session's window under another's name; it is keyed by the session's own ids, read
+  from the refs that are current on every render.
+- **The endpoint no longer blocks the backend.** It was declared `async def` while doing blocking
+  `sqlite3` work, so it held the event loop for its whole run — and the app's own session list is
+  served from that same loop. Measured: a request scheduled alongside a cold read waited **489.4 ms**
+  against the read's 489.3 ms, which is why opening a *session* pane became slow exactly when this
+  backend half arrived: the previous version made **no REST calls at all** on mount (verified against
+  `v1.1.0`), so nothing ever queued. As a plain `def` the endpoint runs in Starlette's threadpool and
+  the same concurrent request waits **2 ms**. `selftest.py` asserts the handler is not a coroutine
+  function, so a future "modernise it to async" fails the suite rather than silently reintroducing
+  the stall.
+- **A failed read no longer flips the basis.** If the summary request hiccuped — a slow backend, a
+  restart — the pane cleared its recorded totals at once and fell back to the page of rows, which is
+  a *different* basis (recorded estimates versus re-priced), so the numbers jumped and jumped back
+  on the next success. That is the "buggy" half of the report. Failures are now tolerated up to
+  three in a row before the documented fallback applies, and a recovery is asserted to land on the
+  same figures rather than compounding deltas — a mutant that restores the single-failure clear
+  fails the suite.
+- **The read-only handle now sees current data.** The endpoint opened `state.db` with
+  `immutable=1`, which tells SQLite the file cannot change — so it skips the write-ahead log and
+  serves a checkpoint-stale view. The same database reported a newest bucket of `04:23` under that
+  flag and `14:38` without it, which is how the chart's last bar read zero while work was in
+  progress. `mode=ro` alone still refuses writes and reads through the WAL; the immutable handle
+  remains only as the fallback when a WAL's shared-memory file cannot be opened.
+- **Section hairlines in the Overview**: counters (**Sessions counted**, **Total requests**), then
+  the token section (**Daily**, **Monthly**, **Total tokens**), then the cost section (**Daily**,
+  **Monthly**, **Total cost**), each divided by the same hairline the session panel uses.
 - **A live cost estimate** — the recorded cost only moves when the session row is written (turn end)
   or re-read (the 15 s poll), so a turn in progress showed a flat figure while the tokens climbed.
   While a call is in flight the in-flight tokens are priced at the row's own blended rate

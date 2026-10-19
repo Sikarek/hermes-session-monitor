@@ -63,6 +63,9 @@ const stubFor = w => {
   const key = JSON.stringify(`__stEvents_${w.key}`)
   const runtime = JSON.stringify(w.runtime)
   const stored = JSON.stringify(w.stored)
+  // A row whose id is not the window's stored atom: the read adopts the resolved id while the
+  // app's atom still carries the previous one. `w.rowId` reproduces it.
+  const storedRowId = JSON.stringify(w.rowId ?? w.stored)
   const cacheRead = String(w.cacheRead)
   const LIST_CALLS = JSON.stringify(`__stListCalls_${w.key}`)
   const SET_MODEL = JSON.stringify(`__stSetModel_${w.key}`)
@@ -112,7 +115,7 @@ const stubFor = w => {
       cache_read_tokens: ${cacheRead} + rowExtra, cache_write_tokens: ${cacheWrite}, cost_source: 'provider_models_api',
       cost_status: 'estimated', estimated_cost_usd: 1.3718, id: ${stored},
       input_tokens: 1000, message_count: 7, output_tokens: 500, reasoning_tokens: 100,
-      resolved_id: ${runtime}
+      id: ${storedRowId}, resolved_id: ${runtime}
     }${CHILD_ROWS}]
     }
   },`
@@ -408,6 +411,9 @@ async function mount(modulePath) {
   }
 
   const registered = []
+  // Per-mount counters: each window has its own ctx (and its own plugin module instance).
+  const counters = { summary: 0 }
+
   const ctx = {
     id: 'stub',
     register: contribution => {
@@ -421,7 +427,19 @@ async function mount(modulePath) {
       return () => {}
     },
     // A test may stand in for the backend half by setting globalThis.__stSummary.
-    rest: async path => (path === 'summary' && globalThis.__stSummary ? globalThis.__stSummary : {}),
+    rest: async path => {
+      if (String(path).startsWith('summary')) {
+        counters.summary += 1
+        globalThis.__stSummaryPath = path
+
+        // A test flips this to reproduce a backend that stops answering.
+        if (globalThis.__stSummaryFails) throw new Error('gateway hiccup: summary unavailable')
+
+        return globalThis.__stSummary ?? {}
+      }
+
+      return {}
+    },
     socket: () => () => {},
     storage: { get: () => undefined, remove: () => {}, set: () => {} },
     os: { notify: () => {}, openExternal: () => {}, reveal: () => {} },
@@ -464,7 +482,7 @@ async function mount(modulePath) {
 
   console.error = originalError
 
-  return { boundaryCaught, chatter, container: rootEl, failures, markup, nodes, registered, rerender }
+  return { boundaryCaught, chatter, container: rootEl, counters, failures, markup, nodes, registered, rerender }
 }
 
 // ── phase 1: the real plugin
@@ -1316,7 +1334,26 @@ globalThis['__stEvents_P']['session.info']({
 })
 await wait(250)
 
-edgeAssert('a figure stamped for another runtime does not paint', !panelP().includes('111,111'), `leaked a stale window: "${panelP().slice(0, 90)}"`)
+edgeAssert(
+  "a figure measured for this session paints even under an older runtime id",
+  panelP().includes('111,111'),
+  `the row stayed blank for its own window (a resume): "${panelP().slice(0, 90)}"`
+)
+
+// The guarantee the strict rule existed for: ANOTHER session's window must never paint here. That
+// payload is dropped on its stored id, so the current figure has to survive it untouched.
+globalThis['__stEvents_P']['session.info']({
+  payload: { stored_session_id: 'storedP-elsewhere', usage: { context_max: 1000, context_percent: 99, context_used: 999 } },
+  session_id: 'rtP-elsewhere',
+  type: 'session.info'
+})
+await wait(250)
+
+edgeAssert(
+  "another session's window does not paint",
+  !panelP().includes('999') && panelP().includes('111,111'),
+  `got "${panelP().slice(0, 90)}"`
+)
 
 globalThis['__stEvents_P']['session.info']({
   payload: { stored_session_id: WINDOWS.p.stored, usage: { context_max: 500000, context_percent: 44, context_used: 222222 } },
@@ -1380,6 +1417,51 @@ const overviewQ = winQ.container?.querySelector('[data-slot="session-monitor-ove
 edgeAssert('the Overview shows the recorded totals', /5,691,612,344/.test(overviewQ) && /24,517/.test(overviewQ) && /263/.test(overviewQ), `got "${overviewQ.slice(0, 130)}"`)
 edgeAssert('the recorded cost is shown', /\$73\.9135/.test(overviewQ), `got "${overviewQ.slice(0, 130)}"`)
 
+// Z — THE CLAUDE-PLAN LANE IN LIVE TICKS. A tick from a bare Claude model (the Claude Code login or a
+// native Anthropic key) adds its tokens to the Overview but never its cost. A vendor-prefixed id
+// (`anthropic/...`) is an OpenRouter call and is priced like any other model.
+const zEvents = globalThis['__stEvents_Q']
+edgeAssert('the Q window exposes its usage handler', typeof zEvents?.['session.usage'] === 'function', 'no session.usage handler')
+const zText = () => winQ.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+const zMaxCost = () => Math.max(0, ...[...zText().matchAll(/\$(\d+\.\d{4})/g)].map(m => Number(m[1])))
+const zTick = (session, model, total) =>
+  zEvents?.['session.usage']?.({ payload: { usage: { total, model } }, session_id: session, type: 'session.usage' })
+
+zTick('rtZclaude', 'sonnet', 1000)
+await wait(250)
+const zTokensBefore = zText()
+zTick('rtZclaude', 'sonnet', 51000)
+await wait(250)
+edgeAssert('a Claude-lane tick still counts its tokens', zText() !== zTokensBefore, 'the Overview did not change')
+edgeAssert('a Claude-lane tick adds no cost', zMaxCost() <= 73.9135, `max cost shown ${zMaxCost()}`)
+
+zTick('rtZopen', 'anthropic/claude-haiku-5.5', 1000)
+await wait(250)
+zTick('rtZopen', 'anthropic/claude-haiku-5.5', 51000)
+await wait(250)
+edgeAssert('an OpenRouter call to a Claude model is still priced', zMaxCost() > 73.9135, `max cost shown ${zMaxCost()}`)
+
+// Z2 — A CLAUDE-PLAN SESSION ROW COSTS ZERO FROM THE START. The row carries its own
+// billing_provider and the mock summary has NO claudeShare map, so this is the row-level rule: a
+// Claude-plan session's recorded cost is never shown, before or without any summary.
+{
+  const calls = globalThis['__stReadCalls_Q'] ?? 0
+  const claudeRow = {
+    id: 'storedQ', resolved_id: 'rtQ', model: 'sonnet', billing_provider: 'claude-subscription-directsdk-experimental',
+    input_tokens: 100, output_tokens: 10, cache_read_tokens: 0, cache_write_tokens: 0,
+    estimated_cost_usd: 9.8765, actual_cost_usd: 0, message_count: 1
+  }
+  globalThis['__stReadRows_Q'] = Array.from({ length: calls + 1 }, (_, i) => (i === calls ? [claudeRow] : undefined))
+  await wait(5200) // the Overview's own read loop re-reads the rows
+  const z2Chip = winQ.container?.querySelector('[data-slot="session-monitor-chip"]')?.textContent ?? ''
+  const z2All = winQ.container?.textContent ?? ''
+
+  edgeAssert('a Claude-plan session row costs zero from the start', z2Chip.includes('$0.0000'), `chip "${z2Chip.slice(0, 80)}"`)
+  edgeAssert('a Claude-plan session row never shows its raw cost', !z2All.includes('9.8765'), "the row's estimated cost is on screen")
+  // The chip's token counter is monotonic within a session, so assert presence, not the exact figure.
+  edgeAssert('its tokens are still counted', /[\d,]+\s*tok/.test(z2Chip), `chip "${z2Chip.slice(0, 80)}"`)
+}
+
 globalThis.__stSummary = null
 
 // A — garbage payloads: no NaN, no undefined, no Infinity anywhere on screen.
@@ -1415,6 +1497,235 @@ globalThis['__stEvents_A']['session.usage']({ payload: { usage: { total: 8888888
 await wait(250)
 
 edgeAssert('the previous session stops counting', !((windowA.container.textContent ?? '').includes('88,888,888')), 'a tick from the abandoned session was adopted')
+
+// ── ADDED IN REVIEW ──────────────────────────────────────────────────────────────────────────────
+// The behaviour of everything added after the first public release. Self-contained: its own fixtures
+// and windows, so it does not depend on the fixtures above.
+// (Rebuilt after a careless `git checkout` of this file discarded the uncommitted originals.)
+
+const DAYS = Array.from({ length: 30 }, (_, index) => ({
+  date: new Date(Date.UTC(2026, 8, 19) - (29 - index) * 86400000).toISOString().slice(0, 10),
+  tokens: index === 26 ? 900000 : index === 5 ? 0 : 1000 * (index + 1)
+}))
+
+globalThis.__stSummary = {
+  today: { calls: 12, cost: 0.05, tokens: 500000 },
+  month: { calls: 40, cost: 0.5, tokens: 2000000 },
+  totals: { calls: 100, cost: 10, sessions: 5, tokens: 1000000 },
+  days: DAYS
+}
+
+const winV = await mount(toModule(code, 'plugin-winV.mjs', stubPathFor({ cacheRead: 2000, key: 'V', runtime: 'rtV', stored: 'storedV' })))
+await wait(500)
+
+const overviewV = () => winV.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+const columnsV = () => [...(winV.container?.querySelectorAll('[data-slot="session-monitor-days-bars"] > div') ?? [])]
+
+edgeAssert(
+  'the summary request carries the user zone',
+  /^summary\?tz=.+&offset=-?\d+$/.test(String(globalThis.__stSummaryPath ?? '')),
+  `requested "${globalThis.__stSummaryPath}"`
+)
+edgeAssert('the chart draws one column per day', columnsV().length === 30, `got ${columnsV().length} columns`)
+edgeAssert('every column is full height, so a stub is still easy to point at', columnsV().every(column => column.className.includes('h-full')), 'a column is not full height')
+
+{
+  const bars = columnsV().map(column => column.firstElementChild)
+  const heights = bars.map(bar => parseFloat(bar?.style?.height) || 0)
+
+  edgeAssert('the tallest bar is the peak day', heights.indexOf(Math.max(...heights)) === 26, `tallest at ${heights.indexOf(Math.max(...heights))}`)
+  edgeAssert('the chart scales to the peak', Math.max(...heights) === 100, `peak bar ${Math.max(...heights)}% tall`)
+  edgeAssert('today is marked', bars.at(-1)?.className.includes('bg-foreground'), `today: ${bars.at(-1)?.className}`)
+  edgeAssert('a zero day keeps a stub', heights[5] === 2, `zero day height ${heights[5]}`)
+  edgeAssert('the chart is labelled with the zone it is cut on', /Sep 19/.test(overviewV().slice(-60)), `got "${overviewV().slice(-60)}"`)
+  edgeAssert('the four sections are ruled off', winV.container?.querySelectorAll('[data-slot="session-monitor-overview"] .border-t').length === 3, 'expected three rules')
+
+  const point = index => columnsV()[index].dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true }))
+
+  point(5)
+  await wait(150)
+  edgeAssert('a stubbed day is still hoverable', /0 tokens/.test(overviewV()), `got "${overviewV().slice(-90)}"`)
+
+  point(26)
+  await wait(150)
+  edgeAssert('pointing at a column reads that day out', /900,000 tokens/.test(overviewV()), `got "${overviewV().slice(-90)}"`)
+  edgeAssert('the pointed bar is lit', bars[26]?.className.includes('bg-foreground'), `class: ${bars[26]?.className}`)
+
+  columnsV()[26].dispatchEvent(new dom.window.MouseEvent('mouseout', { bubbles: true }))
+  await wait(150)
+  edgeAssert('the readout clears when the pointer leaves', !/900,000 tokens/.test(overviewV()), `still showing it: "${overviewV().slice(-90)}"`)
+}
+
+// A FAILING READ MUST NOT FLIP THE BASIS: the totals used to be cleared on the first failure,
+// dropping the Overview onto its page-of-rows fallback (different arithmetic) and back again.
+{
+  const paneV = () => [...(winV.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])].at(-1)
+  const refreshV = async () => {
+    paneV()?.querySelector('button')?.click()
+    await wait(300)
+  }
+
+  globalThis.__stSummaryFails = true
+  await refreshV()
+  await refreshV()
+  edgeAssert('a failed read keeps the recorded totals', /Total tokens1,000,000/.test(overviewV()), `got "${overviewV().slice(0, 120)}"`)
+
+  globalThis.__stSummaryFails = false
+  await refreshV()
+  edgeAssert('a recovery lands on the same figures', /Total tokens1,000,000/.test(overviewV()), `got "${overviewV().slice(0, 120)}"`)
+}
+
+// W — THE CONTEXT MEMO AND THE PROFILE-WIDE READ. Switching back used to blank the Context row and
+// wait on another `session.context_breakdown` (the slowest request the pane makes), and the
+// profile-wide summary rode every switch, one read per mounted view.
+globalThis.__stBreakdown_W = { categories: [], context_estimated: false, context_max: 500000, context_percent: 12, context_used: 60000 }
+globalThis.__stSummary = null
+
+const winW = await mount(toModule(code, 'plugin-winW.mjs', stubPathFor({ cacheRead: 3000, key: 'W', runtime: 'rtW', stored: 'storedW' })))
+const panelW = () => [...(winW.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])].at(-1)?.textContent ?? ''
+
+await wait(500)
+edgeAssert('the context row paints from the pull', panelW().includes('60,000 / 500,000 · 12%'), `got "${panelW().slice(0, 90)}"`)
+
+const readsBefore = winW.counters.summary
+globalThis.__stSetSession_W?.('storedW2', 'rtW2') // a switch: the summary is profile-wide and must not be re-read
+await wait(600)
+edgeAssert('a session switch does not re-read the profile-wide summary', winW.counters.summary === readsBefore, `${winW.counters.summary - readsBefore} summary read(s) rode the switch`)
+
+globalThis.__stBreakdownFail_W = true // only a remembered figure can paint now
+globalThis.__stSetSession_W?.('storedW', 'rtW')
+await wait(600)
+
+edgeAssert('a switch back paints the remembered window', panelW().includes('60,000 / 500,000 · 12%'), `got "${panelW().slice(0, 90)}"`)
+globalThis.__stBreakdownFail_W = false
+
+// X — THE ADOPTED IDENTITY. A read resolves the session on screen and the window adopts that id
+// while the app's stored-id atom can still carry the previous one — the usual state right after a
+// restart, and for any resumed session. The context stamp is written from the adopted id, so the
+// display test has to compare against the same source.
+const winX = await mount(toModule(code, 'plugin-winX.mjs', stubPathFor({ cacheRead: 1000, key: 'X', rowId: 'storedX-adopted', runtime: 'rtX', stored: 'storedX' })))
+const panelX = () => [...(winX.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])].at(-1)?.textContent ?? ''
+
+// Long enough for the read to adopt the row's id: the disagreement only exists once it has.
+await wait(1200)
+
+globalThis['__stEvents_X']['session.info']({
+  payload: { stored_session_id: 'storedX', usage: { context_max: 750000, context_percent: 33, context_used: 247500 } },
+  session_id: 'rtX',
+  type: 'session.info'
+})
+await wait(300)
+
+edgeAssert(
+  "a window naming the app's stored id paints after the read adopted another",
+  panelX().includes('247,500 / 750,000 · 33%'),
+  `the row stayed empty: "${panelX().slice(0, 100)}"`
+)
+
+// Y — THE FLEX TIER. A model the user's `provider_routing` pins to a flex endpoint is billed at
+// exactly half the standard rates (measured against OpenRouter's own charges: 2.0001x and 2.0x),
+// while Hermes records its estimate at standard rates. The backend half's `flex` payload carries
+// the per-session multiplier, so the recorded figure on screen is the flex figure — applied where
+// the cost is COMPUTED, since the summary carrying the multipliers can land after the row read.
+globalThis.__stSummary = { flex: { factor: 0.5, models: ['openai/gpt-6-luna'], mults: { storedY: 0.5 } } }
+
+const winY = await mount(toModule(code, 'plugin-winY.mjs', stubPathFor({ cacheRead: 1000, key: 'Y', runtime: 'rtY', stored: 'storedY' })))
+const panelY = () => [...(winY.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])].at(-1)?.textContent ?? ''
+
+await wait(600)
+edgeAssert('a flex-pinned row shows the flex cost', /\$0\.6859/.test(panelY()), `expected $0.6859 (1.3718 x 0.5): got "${panelY().slice(0, 140)}"`)
+globalThis.__stSummary = null
+
+// S — A SWITCH MUST NOT ZERO THE TOTALS ROW (the reported bug): "when I point at the session it
+// resets everything to zero... it happens every time I switch the session window". The Context
+// row is memoized per session and paints its remembered figure on a switch; the Cache hit /
+// Cache miss / Output / Total / Cost row was NOT — the switch cleared it and waited for the
+// session-list read, which can MISS for a while (the session is not in the loaded page) or fail.
+// The panel then showed zeros until the read landed, or until the next poll found the row.
+globalThis.__stSummary = null
+
+const winS = await mount(toModule(code, 'plugin-winS.mjs', stubPathFor({ cacheRead: 2000, key: 'S', runtime: 'rtS', stored: 'storedS' })))
+const panelS = () => [...(winS.container?.querySelectorAll('[data-slot="session-monitor-panel"]') ?? [])].at(-1)?.textContent ?? ''
+// Expected figures derive from the fixture above (input 1000, output 500, cache_read 2000,
+// cache_write 0) — never from what the plugin prints.
+const hitS = (2000).toLocaleString('en-US') // cache read + cache write
+const missS = (1000).toLocaleString('en-US') // uncached input
+const outS = (500).toLocaleString('en-US') // output
+const totalS = (1000 + 500 + 2000).toLocaleString('en-US') // the row: input + output + cache_read + cache_write
+const rowPaintedS = () =>
+  panelS().includes(`Cache hit${hitS}`) &&
+  panelS().includes(`Cache miss${missS}`) &&
+  panelS().includes(`Output${outS}`) &&
+  panelS().includes(`Total${totalS}`)
+
+await wait(500)
+edgeAssert('the totals row paints on first sight', rowPaintedS(), `got "${panelS().slice(0, 120)}"`)
+
+// From here every read takes ~1s and then reports the session as NOT in the page — the exact
+// shape of a session outside the loaded page of the paginated session list.
+globalThis.__stReadDelays_S = Array(40).fill(900)
+globalThis.__stReadRows_S = Array(40).fill([])
+
+globalThis.__stSetSession_S?.('storedS2', 'rtS2') // away to a session this app run has never seen
+await wait(250)
+
+// A session never seen before starts EMPTY, as it must — nothing is invented for it.
+edgeAssert('a session never seen before starts empty', !rowPaintedS(), `the previous session's row leaked: "${panelS().slice(0, 120)}"`)
+
+globalThis.__stSetSession_S?.('storedS', 'rtS') // back to the session whose figures were already shown
+await wait(250) // the switch's read is still ~700ms from landing: this is the moment the user sees
+
+edgeAssert(
+  'a switch back paints the remembered totals row while the read is pending',
+  rowPaintedS(),
+  `the panel showed "${panelS().slice(0, 120)}" during the switch — zeros until the session-list read lands`
+)
+
+await wait(1400) // the read has landed — and MISSed the row entirely
+
+edgeAssert(
+  'a read that misses the row leaves the last good figures standing',
+  rowPaintedS(),
+  `the miss wiped the row: "${panelS().slice(0, 120)}"`
+)
+
+// The Overview's headline cost is the providers' own figure once reconciled — the estimate cannot
+// reach it (usage billed outside Hermes' database). Present only when the anchors file exists.
+globalThis.__stSummary = {
+  today: { calls: 12, cost: 0.05, tokens: 500000 },
+  month: { calls: 40, cost: 0.5, tokens: 2000000 },
+  totals: { calls: 100, cost: 137.43, sessions: 5, tokens: 1000000 },
+  days: [],
+  confirmed: { openrouter: 121.5, deepseek: 10.25, checked_at: '2026-10-11T00:00:00+00:00', total: 131.75 }
+}
+
+const winAA = await mount(toModule(code, 'plugin-winAA.mjs', stubPathFor({ cacheRead: 2000, key: 'AA', runtime: 'rtAA', stored: 'storedAA' })))
+await wait(500)
+
+const overviewAA = () => winAA.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+edgeAssert('the headline total is what the providers actually reported',
+  /Total cost\$131\.75/.test(overviewAA()),
+  `got "${overviewAA().slice(-140)}"`)
+
+edgeAssert('the reconciled total keeps its date and the part attributed to sessions',
+  /confirmed 2026-10-11/.test(overviewAA()) && /attributed to sessions/.test(overviewAA()),
+  `got "${overviewAA().slice(-140)}"`)
+
+edgeAssert('the local estimate stays visible under the reconciled total',
+  /\$137\.43 attributed to sessions/.test(overviewAA()),
+  `got "${overviewAA().slice(-140)}"`)
+
+delete globalThis.__stSummary.confirmed
+
+const winAB = await mount(toModule(code, 'plugin-winAB.mjs', stubPathFor({ cacheRead: 2000, key: 'AB', runtime: 'rtAB', stored: 'storedAB' })))
+await wait(500)
+
+const overviewAB = () => winAB.container?.querySelector('[data-slot="session-monitor-overview"]')?.textContent ?? ''
+
+edgeAssert('without a reconciliation the total stays the local estimate',
+  !/confirmed /.test(overviewAB()) && /Total cost\$137\.4300/.test(overviewAB()),
+  `leaked an unreconciled figure: "${overviewAB().slice(-140)}"`)
 
 if (edge.length) {
   console.error('\nFAIL (edge cases) — a situation the chip must survive:\n' + edge.map(item => `  • ${item}`).join('\n'))

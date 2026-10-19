@@ -126,7 +126,7 @@ function descendantsOf(page, rootId) {
       if (!id || seen.has(id)) continue // cycles are impossible, but never loop
       seen.add(id)
       tokens += tokenCount(child)
-      cost += (n(child.actual_cost_usd) > 0 ? n(child.actual_cost_usd) : n(child.estimated_cost_usd))
+      cost += pricedCost(id, n(child.actual_cost_usd) > 0 ? n(child.actual_cost_usd) : n(child.estimated_cost_usd) * flexMult(child?.id), rowIsClaudePlan(child))
       count += 1
       queue.push(id)
     }
@@ -212,7 +212,95 @@ const SHARED = {
  * session, split by provider, task and model. The pane prefers those recorded totals and falls back
  * to the page of rows when the route is absent (an older install, or the gate not yet opened).
  */
-const ENRICHED = { available: null, totals: null }
+const ENRICHED = {
+  available: null,
+  days: null,
+  // The backend half's flex payload — `{ factor, models, mults }`: per-session multipliers for
+  // rows whose model the user's `provider_routing` pins to a flex endpoint (billed at exactly
+  // half the standard rates). Hermes records its estimates at STANDARD rates (measured: 2.0x
+  // against OpenRouter's own charge), so every cost computed from one is scaled by the session's
+  // multiplier. Absent means 1 — no discount — which is also the conservative direction.
+  flex: null,
+  // Consecutive failed summary reads. The Overview switches to the page-of-rows basis when the
+  // backend half is absent — but a single slow or failed request used to switch it too, so the
+  // totals visibly jumped between two bases (recorded estimates vs re-priced) and back. The basis
+  // only changes after this many misses in a row.
+  misses: 0,
+  totals: null,
+  // The providers' OWN reported spend (`confirmed` in the summary), for the Overview's one row
+  // that must not be an estimate. Null while unknown.
+  confirmed: null,
+  // Claude-plan share per session (backend half); see `claudeShareOf`.
+  claude: null
+}
+
+/** How many failed reads before the Overview gives up on the backend half. */
+const ENRICHED_MISSES = 3
+
+/**
+ * Claude-plan share per session, from the backend half: the fraction of the session's cost billed to a
+ * separate Claude plan (subscription or API credits). Only that fraction is removed; the rest, including
+ * OpenRouter calls to Claude models, stays. Tokens are never touched. Absent until the summary lands.
+ */
+const claudeShareOf = id => (ENRICHED.claude && id ? Math.min(1, Math.max(0, n(ENRICHED.claude[id]))) : 0)
+
+/** A session's recorded cost with its Claude-plan share removed. */
+/**
+ * A session's recorded cost with the Claude-plan part removed. The backend share map wins when it
+ * has an entry (a mixed session keeps its priced share); otherwise the row's own lane decides and a
+ * Claude-plan row costs 0 from the start. Never "—", never a climb.
+ */
+const pricedCost = (id, cost, claudePlan = false) => {
+  const value = n(cost)
+  const share = claudeShareOf(id)
+
+  if (share > 0) return value * (1 - share)
+
+  return claudePlan ? 0 : value
+}
+
+/**
+ * Whether a model's calls are billed to a Claude plan (Claude Code login or a native Anthropic key)
+ * rather than the cost ledger. A bare Claude id (`sonnet`, `haiku[1m]`, `claude-...`) is that lane; a
+ * vendor-prefixed id (`anthropic/claude-...`) is an OpenRouter call and is priced like any other model.
+ * Tokens from that lane still count everywhere; only their cost is kept out.
+ */
+const isClaudeLane = model => {
+  const m = String(model ?? '').trim().toLowerCase()
+
+  if (!m || m.includes('/')) return false
+
+  return /^(claude|sonnet|opus|haiku|fable)/.test(m)
+}
+
+/** Billing providers whose cost belongs to a Claude plan, not to this ledger. */
+const CLAUDE_PLAN_PROVIDERS = new Set(['anthropic', 'claude-subscription-directsdk-experimental'])
+
+/**
+ * Whether a session row is billed to a Claude plan. The row carries its own `billing_provider`, so
+ * this works with NO summary at all; a bare Claude model id is the fallback for rows that predate
+ * that column. A row billed through OpenRouter keeps its cost whatever its model is called.
+ */
+const rowIsClaudePlan = row => {
+  const provider = String(row?.billing_provider ?? '').trim().toLowerCase()
+
+  if (provider) return CLAUDE_PLAN_PROVIDERS.has(provider)
+
+  return isClaudeLane(row?.model)
+}
+
+/**
+ * The flex multiplier for a recorded row: 1 unless the backend half marked this session's usage
+ * as flex-pinned. Applied where a cost is COMPUTED from `estimated_cost_usd` and never to
+ * `actual_cost_usd` (a recorded charge is already the bill) — and computed at the point of use
+ * rather than stored in the row state, because the summary carrying the multipliers can land
+ * after the row read does, and the figure must correct itself when it does.
+ */
+const flexMult = id => {
+  const mult = n(ENRICHED.flex?.mults?.[id])
+
+  return mult > 0 ? mult : 1
+}
 /** The plugin's own REST namespace (`ctx.rest`), captured at registration. */
 const restRef = { current: null }
 
@@ -225,33 +313,312 @@ const AGG = {
   tokens: 0
 }
 
+/**
+ * The clock every period uses: the USER'S OWN. A day starts at 00:00 where they are, which is what
+ * "today" means to the person reading it — and it is what the backend is told to cut its days on,
+ * so the rows and the chart agree. `Intl` reports the zone of the machine the app is running on;
+ * `UTC` is the fallback for a runtime that cannot answer.
+ */
+const PERIOD_TZ = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+})()
+
+/** Minutes east of UTC right now, as the backend needs it when it cannot load a tz database. */
+const PERIOD_OFFSET = -new Date().getTimezoneOffset()
+
+/** How the zone is named on screen (`GMT+7`), or '' when the runtime will not say. */
+const zoneLabel = (() => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: PERIOD_TZ, timeZoneName: 'short' }).formatToParts(new Date())
+
+    return (parts.find(part => part.type === 'timeZoneName') || {}).value || ''
+  } catch {
+    return ''
+  }
+})()
+
+const utcDay = (now = Date.now()) => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { day: '2-digit', month: '2-digit', timeZone: PERIOD_TZ, year: 'numeric' }).format(new Date(now))
+  } catch {
+    // `Intl` with an explicit timezone is available in every runtime this app ships; the fallback
+    // is here for a stubbed or ancient one, and UTC needs no offset arithmetic.
+    const utc = new Date(now)
+    const pad = value => String(value).padStart(2, '0')
+
+    return `${utc.getUTCFullYear()}-${pad(utc.getUTCMonth() + 1)}-${pad(utc.getUTCDate())}`
+  }
+}
+
+const utcMonth = (now = Date.now()) => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { month: '2-digit', timeZone: PERIOD_TZ, year: 'numeric' }).format(new Date(now))
+  } catch {
+    const utc = new Date(now)
+    const pad = value => String(value).padStart(2, '0')
+
+    return `${utc.getUTCFullYear()}-${pad(utc.getUTCMonth() + 1)}`
+  }
+}
+
+/**
+ * A spend period, observed — not reconstructed. Hermes stores cumulative per-route totals with
+ * only a first/last timestamp, so no local table can say exactly how much of a multi-day bucket
+ * burned inside the period. Each period therefore starts at zero on first observation and adds
+ * only spend seen afterwards: live `session.usage` deltas, plus recorded increments a row or
+ * summary read reports while this plugin lifetime is watching. Daily and Monthly share the shape;
+ * only the seed and the reset boundary differ.
+ */
+function makePeriod(kind) {
+  return {
+    baseCost: 0, // last authoritative summary total seen (same-source growth is the period's spend)
+    baseTokens: 0,
+    cost: 0, // confirmed recorded cost increments inside the period
+    key: '',
+    kind, // 'day' resets at UTC midnight, 'month' on the first of the month
+    live: new Map(), // session id -> { calls: 0, last: counter, tokens: observed, not yet recorded }
+    rows: new Map(), // stored row id -> { cost, tokens } last seen (rows-source growth is the period's spend)
+    seedCost: 0, // backend half's seed: buckets first seen inside the period, captured once per period
+    seedSet: false,
+    seedTokens: 0,
+    source: '', // which recorded base owns the confirmation right now: 'rows' or 'summary'
+    tokens: 0 // confirmed recorded token increments inside the period
+  }
+}
+
+const TODAY = makePeriod('day')
+const MONTH = makePeriod('month')
+const PERIODS = [TODAY, MONTH]
+
+const periodKey = (period, now = Date.now()) => period.kind === 'month' ? utcMonth(now) : utcDay(now)
+
+/** Roll a period over when UTC says so; the next observation starts a fresh zero. */
+function touchPeriod(period) {
+  const key = periodKey(period)
+
+  if (period.key !== key) {
+    period.baseCost = 0
+    period.baseTokens = 0
+    period.cost = 0
+    period.key = key
+    period.live.clear()
+    period.rows.clear()
+    period.seedCost = 0
+    period.seedSet = false
+    period.seedTokens = 0
+    period.source = ''
+    period.tokens = 0
+  }
+
+  return period.key
+}
+
+/** A completed-call delta seen inside the period. The first sighting is a baseline, like the main total. */
+function recordPeriodTick(period, sessionId, total, claude = false) {
+  if (!sessionId || typeof total !== 'number') return
+
+  touchPeriod(period)
+
+  const entry = period.live.get(sessionId) ?? { calls: 0, last: total, tokens: 0, claude }
+
+  entry.claude = claude
+
+  if (total > entry.last) entry.tokens += total - entry.last
+
+  entry.last = total
+  period.live.set(sessionId, entry)
+}
+
+const periodLiveTokens = period => {
+  let tokens = 0
+
+  period.live.forEach(entry => {
+    tokens += entry.tokens
+  })
+
+  return tokens
+}
+
+/** Live tokens whose cost is priced: every session except the Claude-plan lane. */
+const periodLivePricedTokens = period => {
+  let tokens = 0
+
+  period.live.forEach(entry => {
+    if (!entry.claude) tokens += entry.tokens
+  })
+
+  return tokens
+}
+
+/**
+ * A page row that grew while being watched has folded live tokens into the record. Transfer the
+ * absorbed session's observed delta into the period's confirmed figure (first sighting of a row
+ * is a baseline and claims nothing), and count the row's own cost growth as the period's actual.
+ */
+function confirmPeriodRow(period, candidate) {
+  if (!candidate) return
+
+  touchPeriod(period)
+
+  if (period.source && period.source !== 'rows') {
+    period.rows.clear()
+    period.source = 'rows'
+  } else if (!period.source) {
+    period.source = 'rows'
+  }
+
+  const id = candidate?.id ?? ''
+
+  if (!id) return
+
+  const tokens = tokenCount(candidate)
+  const cost = pricedCost(id, n(candidate.actual_cost_usd) > 0 ? n(candidate.actual_cost_usd) : n(candidate.estimated_cost_usd) * flexMult(id), rowIsClaudePlan(candidate))
+  const prev = period.rows.get(id)
+
+  if (!prev) {
+    period.rows.set(id, { cost, tokens })
+    return
+  }
+
+  if (tokens > prev.tokens) {
+    period.tokens += tokens - prev.tokens
+    period.live.delete(id)
+
+    if (candidate.resolved_id) period.live.delete(candidate.resolved_id)
+  }
+
+  if (cost > prev.cost) period.cost += cost - prev.cost
+
+  period.rows.set(id, { cost, tokens })
+}
+
+/**
+ * The backend half's absolute totals, when they move forward while being watched. Growth under
+ * the same source is the period's recorded spend; an unchanged fetch keeps the live deltas (the
+ * write may simply not have landed yet), and a correction rebases without erasing them.
+ */
+function notePeriodSummary(period, totals, seed) {
+  const tokens = n(totals?.tokens)
+  const cost = n(totals?.cost)
+
+  touchPeriod(period)
+
+  if (period.source !== 'summary') {
+    // First summary of the period seeds it with what the record already holds for buckets
+    // first seen inside the period — spend that happened before this plugin lifetime opened.
+    // The row path may already have confirmed some of those same writes, so only the
+    // remainder is seeded; afterwards the seed is frozen and everything new flows through
+    // live/confirmed.
+    if (!period.seedSet) {
+      period.seedTokens = Math.max(0, n(seed?.tokens) - period.tokens)
+      period.seedCost = Math.max(0, n(seed?.cost) - period.cost)
+      period.seedSet = true
+    }
+
+    period.baseCost = cost
+    period.baseTokens = tokens
+    period.source = 'summary'
+    return
+  }
+
+  const grewTokens = tokens > period.baseTokens
+  const grewCost = cost > period.baseCost
+
+  if (grewTokens) {
+    period.tokens += tokens - period.baseTokens
+    period.baseTokens = tokens
+    period.live.clear()
+  } else if (tokens < period.baseTokens) {
+    period.baseTokens = tokens
+  }
+
+  if (grewCost) {
+    period.cost += cost - period.baseCost
+    period.baseCost = cost
+  } else if (cost < period.baseCost) {
+    period.baseCost = cost
+  }
+}
+
+/** A period on screen: the backend's seed, confirmed recorded increments, and whatever is still in flight. */
+function periodSnapshot(period, streamed = 0, streamPriced = true) {
+  touchPeriod(period)
+
+  const liveTokens = periodLiveTokens(period) + Math.max(0, n(streamed))
+  const livePriced = periodLivePricedTokens(period) + (streamPriced ? Math.max(0, n(streamed)) : 0)
+  const baseTokens = ENRICHED.totals ? n(ENRICHED.totals.tokens) : AGG.tokens
+  const baseCost = ENRICHED.totals ? n(ENRICHED.totals.cost) : AGG.cost
+  const rateTokens = ENRICHED.totals ? n(ENRICHED.totals.pricedTokens ?? ENRICHED.totals.tokens) : baseTokens
+  const rate = rateTokens > 0 && baseCost > 0 ? baseCost / rateTokens : 0
+
+  return {
+    cost: period.seedCost + period.cost + livePriced * rate,
+    live: liveTokens > 0,
+    tokens: period.seedTokens + period.tokens + liveTokens
+  }
+}
+
 /** What the Overview renders: the rows, plus every running session's live deltas. */
 function overviewSnapshot() {
   let liveTokens = 0
 
+  let livePriced = 0
+
   AGG.live.forEach(entry => {
     liveTokens += entry.tokens
+    if (!entry.claude) livePriced += entry.tokens
   })
 
   // In-flight growth priced at the aggregate's own blended rate, marked as the estimate it is.
-  const rate = AGG.tokens > 0 && AGG.cost > 0 ? AGG.cost / AGG.tokens : 0
+  // With the backend totals present the priced basis wins: AGG.cost excludes Claude-plan cost while
+  // AGG.tokens still counts Claude tokens, so the row-derived rate would under-price the live tokens.
+  const rate = ENRICHED.totals ? 0 : (AGG.tokens > 0 && AGG.cost > 0 ? AGG.cost / AGG.tokens : 0)
 
   // The backend half's recorded totals when they are available — every session, every provider —
   // otherwise the page of rows this view could read for itself.
   const baseCost = ENRICHED.totals ? ENRICHED.totals.cost : AGG.cost
   const baseCalls = ENRICHED.totals ? ENRICHED.totals.calls : AGG.requests
   const baseTokens = ENRICHED.totals ? ENRICHED.totals.tokens : AGG.tokens
-  const baseRate = baseTokens > 0 && baseCost > 0 ? baseCost / baseTokens : 0
+  const rateTokens = ENRICHED.totals ? n(ENRICHED.totals.pricedTokens ?? baseTokens) : baseTokens
+  const baseRate = rateTokens > 0 && baseCost > 0 ? baseCost / rateTokens : 0
 
   return {
-    cost: baseCost + liveTokens * (rate || baseRate),
-    costLive: liveTokens > 0 && (rate > 0 || baseRate > 0),
+    cost: baseCost + livePriced * (rate || baseRate),
+    days: ENRICHED.days,
+    costLive: livePriced > 0 && (rate > 0 || baseRate > 0),
     liveTokens,
     requests: baseCalls,
     sessions: ENRICHED.totals ? ENRICHED.totals.sessions : AGG.sessions,
-    tokens: baseTokens + liveTokens
+    tokens: baseTokens + liveTokens,
+    pricedTokens: rateTokens + livePriced
   }
 }
+
+/**
+ * The last context window seen for each session, keyed by its identity. Switching sessions used to
+ * clear the Context row and then wait for a fresh `session.context_breakdown` — a gateway RPC that
+ * estimates from the live prompt, tools and transcript, so it is the slowest thing the pane asks
+ * for and it was on the critical path of every switch. The memo lets a switch paint the figure it
+ * already knows and refresh it in the background; the stamp check still stops one session's window
+ * from ever appearing under another's name.
+ */
+const CTX_MEMO = new Map()
+
+/**
+ * The last TOTALS row seen for each session, keyed the same way. The context row was memoized
+ * because a switch blanked it; the Cache hit / Cache miss / Output / Total / Cost row suffered
+ * the same fate and had no memo — a switch cleared it and waited for the session-list read,
+ * which can miss for seconds (the session is not in the loaded page) or fail, so the panel
+ * showed zeros for a session whose figures it had already displayed ("it resets everything to
+ * zero... it happens every time I switch the session window"). The memo lets a switch paint the
+ * row it already knows and refresh it in the background; a session never seen before in this app
+ * run has no memo and starts empty, as it must.
+ */
+const ROW_MEMO = new Map()
 
 const UI = { base: null, ctx: null, overview: null, refreshing: false, rowState: 'pending', subagents: null, version: 0 }
 const UI_SUBSCRIBERS = new Set()
@@ -319,6 +686,10 @@ function useMonitor() {
   // session's live counters were still displayed — and, before this, where an id resolved for
   // another session could remain in the ownership filter.
   const identityKey = `${runtimeId ?? ''}|${storedId ?? ''}`
+  // Either identity may be the one the earlier visit stored: a resumed session arrives under a new
+  // runtime id, and a reattached one may only match on the stored id.
+  const memoFor = () => (storedId && CTX_MEMO.get(storedId)) || (runtimeId && CTX_MEMO.get(runtimeId)) || null
+  const rowMemoFor = () => (storedId && ROW_MEMO.get(storedId)) || (runtimeId && ROW_MEMO.get(runtimeId)) || null
   const profile = useValue(host.state.focusedSessionProfile)
   // The model decides the context WINDOW, so a switch has to invalidate it.
   const model = useValue(host.state.model)
@@ -352,6 +723,11 @@ function useMonitor() {
   const best = SHARED.best
   const frame = SHARED.frame
   const storedRef = useRef(storedId)
+  // The app's OWN idea of the focused session, kept alongside the id the row read adopts. Both are
+  // authorities on "this window's session", and they disagree in exactly the interesting moment: a
+  // read that resolved a different row leaves the ref on one id while the app's atoms — the ids the
+  // events carry — still hold the other.
+  const storedAtomRef = useRef(storedId)
   const runtimeRef = useRef(runtimeId)
   // Runtime id learned from this session's own `session.info` (payload carries the
   // STORED id, so this is proof, not a guess). Needed because a resumed session
@@ -365,6 +741,7 @@ function useMonitor() {
   // another), so match an alias set rather than a single id.
 
   storedRef.current = storedId
+  storedAtomRef.current = storedId
   runtimeRef.current = runtimeId
 
   // Repaint on the next animation frame after a change: ≤16ms of latency, and
@@ -410,12 +787,21 @@ function useMonitor() {
       const next = {
         estimated: Boolean(usage.context_estimated),
         forRuntime: forRuntime ?? null,
+        // The runtime id alone was too strict: a resumed session runs under a NEW runtime id while
+        // its stored id stays, so a figure measured for it — pushed before the window's own atoms
+        // caught up, or relayed — carried a stamp that no longer matched and the row stayed blank.
+        // The stored id is per-session and stable, so it is the better half of the stamp.
+        forStored: [storedRef.current, storedAtomRef.current].filter(Boolean),
         max,
         percent: n(usage.context_percent),
         used
       }
 
       ctxRef.current = next
+      // Keyed by the session's own ids, read from the refs: a render-scoped key goes stale the
+      // moment the session changes, and would file one session's window under another's name.
+      if (storedRef.current) CTX_MEMO.set(storedRef.current, next)
+      if (forRuntime) CTX_MEMO.set(forRuntime, next)
       setCtx(next)
     }
   }, [])
@@ -489,7 +875,11 @@ function useMonitor() {
         const anyCalls = event.payload?.usage?.calls
 
         if (typeof anyTotal === 'number' && event.session_id) {
-          const entry = AGG.live.get(event.session_id) ?? { calls: 0, last: anyTotal, tokens: 0 }
+          // The lane of the model this tick ran on: Claude-plan tokens count, their cost does not.
+          const claude = isClaudeLane(event.payload?.usage?.model)
+          const entry = AGG.live.get(event.session_id) ?? { calls: 0, last: anyTotal, tokens: 0, claude }
+
+          entry.claude = claude
 
           if (anyTotal > entry.last) entry.tokens += anyTotal - entry.last
 
@@ -503,6 +893,7 @@ function useMonitor() {
 
           entry.last = anyTotal
           AGG.live.set(event.session_id, entry)
+          PERIODS.forEach(period => recordPeriodTick(period, event.session_id, anyTotal, claude))
           uiSet({ overview: overviewSnapshot() })
         }
 
@@ -524,7 +915,12 @@ function useMonitor() {
       // resumed — the only way the context row paints before the next API call.
       // Attributed by STORED id: this event carries no runtime id of its own.
       host.onEvent('session.info', event => {
-        if (event.payload?.stored_session_id !== storedRef.current) return
+        const claimed = event.payload?.stored_session_id
+
+        // Refused unless it names this session by one of the two authorities. Testing the adopted id
+        // alone left a resumed or reattached session — the usual state right after a restart — with
+        // its own pushed window rejected, so the row never filled.
+        if (!claimed || (claimed !== storedRef.current && claimed !== storedAtomRef.current)) return
 
         // Same session, possibly a new runtime id (resume/reconnect): adopt it, so
         // the live ticks that follow are attributed instead of discarded.
@@ -572,6 +968,8 @@ function useMonitor() {
   // addressed to THIS window's session id, so the answer cannot be another session's.
   const pullContext = useCallback(
     async ({ force = false, retry = false } = {}) => {
+      // `force` also means "the memo painted a remembered figure, refresh it now": a stamped value
+      // from an earlier visit is a starting point, never a reason to skip the read.
       if (!force && ctxRef.current !== null) return // pushed (measured) data beats an estimate
       if (typeof host.request !== 'function') return
       if (!runtimeId) return // a draft has no session to ask about
@@ -673,7 +1071,7 @@ function useMonitor() {
 
         const candidateTotal = tokenCount(candidate)
 
-        aggCost += n(candidate.actual_cost_usd) > 0 ? n(candidate.actual_cost_usd) : n(candidate.estimated_cost_usd)
+        aggCost += pricedCost(candidateId, n(candidate.actual_cost_usd) > 0 ? n(candidate.actual_cost_usd) : n(candidate.estimated_cost_usd) * flexMult(candidateId), rowIsClaudePlan(candidate))
         aggTokens += candidateTotal
 
         // A row that grew has had its live tokens folded in: drop the delta so they count once.
@@ -689,6 +1087,8 @@ function useMonitor() {
         }
 
         AGG.rowTotals.set(candidateId, candidateTotal)
+
+        if (!ENRICHED.totals) PERIODS.forEach(period => confirmPeriodRow(period, candidate))
       }
 
       AGG.cost = aggCost
@@ -710,14 +1110,17 @@ function useMonitor() {
 
         debug('row', { rowTotal: tokenCount(row), storedId: effectiveStored })
         setRowState('ok')
-        setBase({
+        const rowSnapshot = {
           cacheRead: n(row.cache_read_tokens),
           cacheWrite: n(row.cache_write_tokens),
           in: n(row.input_tokens),
           // Cost as Hermes records it. NOTE: this is an ESTIMATE derived from the
           // model's published rates (cost_status 'estimated'); OpenRouter's own
           // per-generation charge is not persisted anywhere locally, so it cannot
-          // be labelled as a bill.
+          // be labelled as a bill. It is a STANDARD-rate figure even for flex-pinned
+          // routes (measured: 2.0x against OpenRouter's own charge), so every cost
+          // derived from it is scaled by the session's flex multiplier where it is
+          // computed (see `flexMult` and `mainCost`).
           // Cache hit rate, Hermes' own definition: cache_read ÷ prompt tokens
           // (input + cache_read + cache_write), rounded — identical to the
           // gateway's `cache_hit_pct` and the built-in Cache hit rate item.
@@ -732,12 +1135,26 @@ function useMonitor() {
               : null
           })(),
           cost: n(row.estimated_cost_usd),
+          claudePlan: rowIsClaudePlan(row),
+          costId: row.id ?? effectiveStored,
           costSource: row.cost_source ?? '',
           costStatus: row.cost_status ?? '',
           actualCost: n(row.actual_cost_usd),
           out: n(row.output_tokens),
           total: rowTotal
-        })
+        }
+
+        // Keyed like the context memo — every stored id this session is known by (the adopted
+        // one and the read's own) plus the runtime id the row resolved to, so a switch finds
+        // the row under either identity (a resumed session arrives under a new runtime id, a
+        // reattached one may only match on the stored id).
+        if (row.id) ROW_MEMO.set(row.id, rowSnapshot)
+        if (wantStored && wantStored !== row.id) ROW_MEMO.set(wantStored, rowSnapshot)
+
+        const rowRuntime = row.resolved_id ?? runtimeId
+
+        if (rowRuntime) ROW_MEMO.set(rowRuntime, rowSnapshot)
+        setBase(rowSnapshot)
         return
       }
 
@@ -760,9 +1177,30 @@ function useMonitor() {
     try {
       const summary = await rest('summary')
 
+      // The flex multipliers ride every good summary, totals or not — they must land as soon as
+      // the backend half speaks, since every cost computed from a recorded estimate scales by
+      // them. The repaint matters: a totals-less summary would otherwise leave the corrected
+      // figures waiting for an unrelated render.
+      if (summary && 'claudeShareBySession' in summary) {
+        ENRICHED.claude = summary.claudeShareBySession ?? {}
+        uiSet({})
+      }
+      if (summary?.flex) {
+        ENRICHED.flex = summary.flex
+        uiSet({})
+      }
+      if (summary && 'confirmed' in summary) {
+        ENRICHED.confirmed = summary.confirmed ?? null
+        uiSet({})
+      }
+
       if (summary?.totals) {
         ENRICHED.available = true
+        ENRICHED.misses = 0
         ENRICHED.totals = summary.totals
+        ENRICHED.days = Array.isArray(summary.days) ? summary.days : null
+        notePeriodSummary(TODAY, summary.totals, summary.today)
+        notePeriodSummary(MONTH, summary.totals, summary.month)
         // The recorded totals now account for everything counted so far, so the live deltas are
         // dropped — otherwise each fetch would add them to the total it already includes.
         AGG.live.clear()
@@ -770,9 +1208,16 @@ function useMonitor() {
         uiSet({ overview: overviewSnapshot() })
       }
     } catch {
-      // No backend half (or it is not enabled): the page of rows remains the source.
-      ENRICHED.available = false
-      ENRICHED.totals = null
+      // A failed read keeps the last good totals on screen until the failures are clearly not
+      // transient — then the page of rows becomes the source again.
+      ENRICHED.misses += 1
+
+      if (ENRICHED.misses >= ENRICHED_MISSES) {
+        ENRICHED.available = false
+        ENRICHED.days = null
+        ENRICHED.flex = null
+        ENRICHED.totals = null
+      }
     }
   }, [])
 
@@ -804,9 +1249,16 @@ function useMonitor() {
     aliasRef.current = null
     rowTotalRef.current = 0
     tickSeen.current = false
-    ctxRef.current = null
-    setBase(null)
-    setCtx(null)
+    // Paint what this session reported earlier in this app run instead of blanking: the pull below
+    // then refreshes it. A session never seen before still starts empty, as it must. The totals
+    // row rides the same rule — the read that follows can miss or fail for seconds, and the
+    // zeros in between are the "everything resets to zero on a session switch" report.
+    const remembered = memoFor()
+    const rememberedRow = rowMemoFor()
+
+    ctxRef.current = remembered
+    setBase(rememberedRow)
+    setCtx(remembered)
     setSubagents(null)
     setRowState('pending')
     void load()
@@ -835,6 +1287,14 @@ function useMonitor() {
     void pullContext()
   }, [pullContext, runtimeId, storedId])
 
+  // The backend half is read ONCE per view mount, not per session: the summary is profile-wide, so
+  // re-reading it every time the selected session changed was pure cost on the switch path (it is
+  // the slowest request the pane makes). Opening the pane still gets its totals at once, and the
+  // Overview's own loop keeps them fresh while it is open.
+  useEffect(() => {
+    void loadRecorded(restRef.current)
+  }, [])
+
   // Turn end is when the row is written — pick it up, and stop polling while working.
   useEffect(() => {
     chars.current = 0
@@ -843,8 +1303,6 @@ function useMonitor() {
 
     // One poll per window, for the same reason as one subscriber.
     OWNERS.poll += 1
-
-    void loadRecorded(restRef.current)
 
     if (OWNERS.poll === 1) {
       ENGINE.timer = setInterval(() => {
@@ -902,9 +1360,12 @@ function useMonitor() {
   // The blended rate UNDERSTATES an output-heavy call (cache-read tokens cost a fraction of
   // generated ones, and the row carries no per-bucket cost), so the estimate lags rather than
   // overshoots, and each read corrects it.
-  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
+  // `base.cost` is the recorded ESTIMATE — standard-rate even where the pin halves the invoice —
+  // so the flex multiplier is applied HERE, at compute time: the backend half's multipliers can
+  // land after the row read, and the figure must flip to the flex price when they do.
+  const mainCost = pricedCost(base?.costId, base?.actualCost > 0 ? base.actualCost : (base?.cost ?? 0) * flexMult(base?.costId), base?.claudePlan)
   const liveTokens = grown + streamed
-  const rate = base && base.total > 0 && mainCost > 0 ? mainCost / base.total : 0
+  const rate = isClaudeLane(model) ? 0 : (base && base.total > 0 && mainCost > 0 ? mainCost / base.total : 0)
   const costLive = rate > 0 && liveTokens > 0
   const costShown = costLive ? mainCost + liveTokens * rate + subagentCost : mainCost + subagentCost
 
@@ -917,6 +1378,14 @@ function useMonitor() {
     overview,
     costShown,
     statsRuntime: runtimeId,
+    // The ADOPTED stored id, not the atom's: the row read rewrites `storedRef` when it resolves the
+    // session on screen (`if (row?.id && row.id !== storedRef.current) ...`), and the context stamp
+    // is written from that same ref. Comparing one against the other meant a window measured for a
+    // resumed or reattached session — the common case right after a restart, while the app's atoms
+    // are still settling — was stamped with one id and tested against another, so the row showed
+    // nothing. Stamp and check must read the same source.
+    statsStored: storedRef.current,
+    statsStoredAtom: storedId,
     ctx,
     grown,
     onPull: pullContext,
@@ -925,6 +1394,7 @@ function useMonitor() {
     refreshing,
     rowState,
     streamed,
+    streamPriced: !isClaudeLane(model),
     subagentCost,
     subagents,
     subagentTokens,
@@ -943,7 +1413,7 @@ function Chip() {
 
   // `costShown` is the recorded cost, or that cost plus the in-flight part at the row's blended
   // rate while a call is running (`costLive` marks the estimate).
-  const costLabel = costShown > 0 ? `${costLive ? '~' : ''}$${costShown.toFixed(4)}` : ''
+  const costLabel = `${costLive ? '~' : ''}$${costShown.toFixed(4)}`
   const hitLabel = typeof base?.cacheHit === 'number' ? `${base.cacheHit.toFixed(2)}%` : ''
 
   const trigger = jsx('button', {
@@ -990,13 +1460,96 @@ function Chip() {
   })
 }
 
+/** `2026-09-14` → `Sep 14 GMT+7`; anything unparseable renders as empty rather than NaN. */
+const dayLabel = iso => {
+  const date = shortDate(iso)
+
+  return date ? `${date}${zoneLabel ? ` ${zoneLabel}` : ''}` : ''
+}
+
+/** `2026-09-14` → `Sep 14`; anything unparseable renders as empty rather than NaN. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const shortDate = iso => {
+  const parts = String(iso ?? '').split('-')
+  const month = MONTHS[Number(parts[1]) - 1]
+
+  return month && parts[2] ? `${month} ${Number(parts[2])}` : ''
+}
+
+/**
+ * One bar per day, the tallest scaled to the full height, today's bar in full contrast. Pointing
+ * at a bar reads that day out under the graph (date left, tokens right — the same label/figure
+ * arrangement as every row above it) and lights the bar up, so the value is available without
+ * hovering tooltips that would float over the pane. A day with no usage keeps a 2px stub: an
+ * absent bar and a zero bar read very differently, and "nothing that day" is information.
+ */
+function DayChart({ days }) {
+  const [pointed, setPointed] = useState(null)
+  const last = days.length - 1
+  const active = pointed !== null && days[pointed] ? days[pointed] : null
+  const peak = days.reduce((max, day) => Math.max(max, n(day?.tokens)), 0)
+
+  return jsxs('div', {
+    'data-slot': 'session-monitor-days',
+    className: 'flex flex-col gap-1.5',
+    children: [
+      jsx('div', {
+        'data-slot': 'session-monitor-days-bars',
+        className: 'flex h-9 items-end gap-px',
+        // Leaving the strip clears the readout: `onMouseLeave` here fires only for a real exit,
+        // not when the pointer moves between two bars.
+        onMouseLeave: () => setPointed(null),
+        children: days.map((day, index) => {
+          const tokens = n(day?.tokens)
+          const lit = index === pointed
+
+          // The hover target is this whole COLUMN, not the painted bar inside it: a quiet day is
+          // a 2px stub, and asking someone to land the pointer on that is asking them to miss.
+          // The column also tints when pointed at, so even a stub gives visible feedback that it
+          // is the thing being read out.
+          return jsx('div', {
+            className: cn('flex h-full flex-1 items-end', lit && 'bg-(--chrome-action-hover)'),
+            key: day?.date ?? String(index),
+            onMouseEnter: () => setPointed(index),
+            children: jsx('div', {
+              className: cn(
+                'w-full rounded-[1px]',
+                tokens <= 0
+                  ? 'bg-(--ui-stroke-tertiary)'
+                  : index === last || lit
+                    ? 'bg-foreground'
+                    : 'bg-(--ui-text-tertiary)'
+              ),
+              // ≥6% so a day with usage is never invisible next to the peak of a 24-day window.
+              style: { height: tokens > 0 ? `${Math.max(6, Math.round((tokens / peak) * 100))}%` : '2px' }
+            })
+          })
+        })
+      }),
+      jsxs('div', {
+        className: 'flex items-baseline justify-between gap-2 text-[0.625rem] text-muted-foreground',
+        children: [
+          jsx('span', { children: dayLabel(active ? active.date : days[0]?.date) }),
+          // Idle it states the window's ends; pointed at, it answers with that day's tokens. The
+          // dates carry `UTC` because that is the boundary the bars are cut on — the same one a
+          // provider's own activity page uses, which is what makes the two comparable.
+          jsx('span', {
+            className: active ? 'tabular-nums text-foreground' : '',
+            children: active ? `${fmt(active.tokens)} tokens` : dayLabel(days[last]?.date)
+          })
+        ]
+      })
+    ]
+  })
+}
+
 /**
  * The Overview tab: every session in the profile, totalled, climbing while any of them runs. Its
  * base is the page of session rows (the same read the focused view makes); what makes it live is
  * the per-session deltas the tick handler records for every running session.
  */
 function OverviewPane() {
-  const { overview, readRecorded, readRows, streamed } = useMonitor()
+  const { overview, readRecorded, readRows, streamed, streamPriced } = useMonitor()
   // Its own read loop, independent of the engine's poll: whatever a view's lifecycle does to the
   // shared subscriptions, the Overview on screen keeps reading the rows and the backend half.
   const reads = useRef({ readRecorded, readRows })
@@ -1011,21 +1564,53 @@ function OverviewPane() {
 
     return () => clearInterval(timer)
   }, [])
-  const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, requests: 0, sessions: 0, tokens: 0 }
+  const o = overview ?? { cost: 0, costLive: false, liveTokens: 0, pricedTokens: 0, requests: 0, sessions: 0, tokens: 0 }
   // The streamed text of the session in front of you is not in any row and not yet in a tick, so
   // it is added here: without it the totals move once per completed call, and with it they climb
   // word by word like the chip does. Both totals then read as the recorded figures the moment a
   // read brings them in — which is the confirmation, per row.
   const inFlight = streamed > 0
   const tokensShown = o.tokens + streamed
-  const rate = o.tokens > 0 && o.cost > 0 ? o.cost / o.tokens : 0
-  const costShown = o.cost + streamed * rate
+  // Priced tokens only: Claude-lane tokens are in o.tokens but never in o.cost.
+  const rate = o.pricedTokens > 0 && o.cost > 0 ? o.cost / o.pricedTokens : 0
+  // Streamed text of a Claude-lane session counts as tokens, never as cost.
+  const costShown = o.cost + (streamPriced ? streamed * rate : 0)
   const estimating = o.costLive || inFlight
-  const rows = [
-    ['Sessions counted', fmt(o.sessions)],
-    ['Total requests', fmt(o.requests ?? 0)],
-    ['Total tokens', `${estimating && inFlight ? '~' : ''}${fmt(tokensShown)}`],
-    ['Total cost', costShown > 0 ? `${estimating ? '~' : ''}$${costShown.toFixed(4)}` : '—']
+  const today = periodSnapshot(TODAY, streamed, streamPriced)
+  const month = periodSnapshot(MONTH, streamed, streamPriced)
+  const costOf = snapshot => `${snapshot.live ? '~' : ''}$${snapshot.cost.toFixed(4)}`
+  // The headline cost is the providers' OWN figure once it has been reconciled. The local estimate
+  // can only value tokens Hermes recorded, so it misses everything billed outside this database —
+  // earlier DeepSeek platform usage, OpenRouter's per-call charges — and reads well under the
+  // invoice. The estimate stays visible as the part attributed to sessions.
+  const confirmed = ENRICHED.confirmed && n(ENRICHED.confirmed.total) > 0 ? ENRICHED.confirmed : null
+  const confirmedNote = confirmed
+    ? [
+        `confirmed ${(confirmed.checked_at ?? '').slice(0, 10)}`,
+        `$${costShown.toFixed(2)} attributed to sessions`,
+        ...(confirmed.deepseek == null ? ['DeepSeek not yet added'] : [])
+      ].join(' · ')
+    : null
+  // Three sections — counters, tokens, costs — each separated by a hairline, mirroring the
+  // session panel's rule above its derived figures. Monthly sits between Daily and Total in
+  // each section so the eye reads short period → long period left to right, top to bottom.
+  const groups = [
+    [
+      ['Sessions counted', fmt(o.sessions)],
+      ['Total requests', fmt(o.requests ?? 0)]
+    ],
+    [
+      ['Daily tokens', `${today.live && inFlight ? '~' : ''}${fmt(today.tokens)}`],
+      ['Monthly tokens', `${month.live && inFlight ? '~' : ''}${fmt(month.tokens)}`],
+      ['Total tokens', `${estimating && inFlight ? '~' : ''}${fmt(tokensShown)}`]
+    ],
+    [
+      ['Daily cost', costOf(today)],
+      ['Monthly cost', costOf(month)],
+      ['Total cost',
+        confirmed ? `$${confirmed.total.toFixed(2)}` : `${estimating ? '~' : ''}$${costShown.toFixed(4)}`,
+        confirmedNote]
+    ]
   ]
 
   return jsxs('div', {
@@ -1033,22 +1618,42 @@ function OverviewPane() {
     className: 'flex w-64 flex-col gap-3 p-3 text-[0.75rem]',
     children: [
       jsx('p', { className: 'font-medium text-foreground', children: 'Overview' }),
-      jsx('ul', {
-        className: 'flex flex-col gap-1.5',
-        children: rows.map(([label, value]) =>
-          jsxs(
-            'li',
-            {
-              key: label,
-              className: 'flex items-baseline justify-between gap-2',
-              children: [
-                jsx('span', { className: 'truncate text-muted-foreground', children: label }),
-                jsx('span', { className: 'tabular-nums text-foreground', children: value })
-              ]
-            }
+      ...groups.flatMap((rows, index) => [
+        ...(index > 0 ? [jsx('div', { className: 'border-t border-border/50', key: `rule-${index}` })] : []),
+        jsx('ul', {
+          className: 'flex flex-col gap-1.5',
+          key: `group-${index}`,
+          children: rows.map(([label, value, note]) =>
+            jsxs(
+              'li',
+              {
+                key: label,
+                className: note ? 'flex flex-col gap-0.5' : 'flex items-baseline justify-between gap-2',
+                children: note
+                  ? [
+                      jsxs('span', {
+                        className: 'flex items-baseline justify-between gap-2',
+                        children: [
+                          jsx('span', { className: 'truncate text-muted-foreground', children: label }),
+                          jsx('span', { className: 'tabular-nums text-foreground', children: value })
+                        ]
+                      }),
+                      jsx('span', { className: 'truncate text-muted-foreground/70', children: note })
+                    ]
+                  : [
+                      jsx('span', { className: 'truncate text-muted-foreground', children: label }),
+                      jsx('span', { className: 'tabular-nums text-foreground', children: value })
+                    ]
+              }
+            )
           )
-        )
-      }),
+        })
+      ]),
+      // The chart closes the tab: a fourth section, ruled off like the others, present only when
+      // the backend half has answered (without it there is no per-day series to draw).
+      ...(o.days && o.days.length
+        ? [jsx('div', { className: 'border-t border-border/50', key: 'rule-chart' }), jsx(DayChart, { days: o.days, key: 'chart' })]
+        : [])
     ]
   })
 }
@@ -1065,11 +1670,16 @@ function MonitorPane() {
  */
 function TokenPanel({ stats }) {
 
-  const { base, ctx, costLive, costShown, grown, onPull, onRefresh, refreshing, rowState, statsRuntime, streamed, subagentCost, subagents, subagentTokens, total } = stats
+  const { base, ctx, costLive, costShown, grown, onPull, onRefresh, refreshing, rowState, statsRuntime, statsStored, statsStoredAtom, streamed, subagentCost, subagents, subagentTokens, total } = stats
   // Show a window only while its stamp matches the chat on screen; otherwise the row reads "—"
   // until THIS session reports its own — which is what keeps one session's window from appearing
   // under another session's name.
-  const shownCtx = ctx && (ctx.forRuntime ?? null) === (statsRuntime ?? null) ? ctx : null
+  const shownCtx =
+    ctx &&
+    ((ctx.forRuntime ?? null) === (statsRuntime ?? null) ||
+      (Array.isArray(ctx.forStored) && ctx.forStored.some(id => id === statsStored || id === statsStoredAtom)))
+      ? ctx
+      : null
 
   const cachedInput = (base?.cacheRead ?? 0) + (base?.cacheWrite ?? 0)
   // The popover mounts on open (Radix), so this is "the user looked at the panel":
@@ -1085,7 +1695,7 @@ function TokenPanel({ stats }) {
   }, [onPull])
 
   // This session's own cost, before the subagents are added to it.
-  const mainCost = base?.actualCost > 0 ? base.actualCost : base?.cost ?? 0
+  const mainCost = pricedCost(base?.costId, base?.actualCost > 0 ? base.actualCost : (base?.cost ?? 0) * flexMult(base?.costId), base?.claudePlan)
   const estimating = grown > 0 || streamed > 0
 
   /** One label/value row. */
@@ -1205,7 +1815,7 @@ function TokenPanel({ stats }) {
             jsx('span', {
               className: 'tabular-nums text-foreground',
               children:
-                costShown > 0 ? `${costLive ? '~' : ''}$${costShown.toFixed(4)}` : '—'
+                `${costLive ? '~' : ''}$${costShown.toFixed(4)}`
             })
           ]})
         ]
@@ -1249,7 +1859,12 @@ export default {
 
     // The backend half's summary route, if it is installed and enabled (see the README): the
     // recorded totals over every session, which the app side cannot read for itself.
-    restRef.current = typeof ctx.rest === 'function' ? path => ctx.rest(path) : null
+    restRef.current =
+      typeof ctx.rest === 'function'
+        ? path =>
+            // The backend cannot know which timezone the user is in — this side can, so it says so.
+            ctx.rest(`${path}?tz=${encodeURIComponent(PERIOD_TZ)}&offset=${PERIOD_OFFSET}`)
+        : null
     // `data` (not `render`) so the bar's own right-click menu can list it: an item
     // with a `toggleLabel` gets a "Show in status bar" checkbox and a persisted
     // hide flag; a plain `render` contribution is always-on chrome with no toggle.
